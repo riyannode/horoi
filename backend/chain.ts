@@ -156,6 +156,40 @@ export const bstockAbi = [
   },
   {
     type: "function",
+    name: "DEFAULT_ADMIN_ROLE",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "getRoleMemberCount",
+    stateMutability: "view",
+    inputs: [{ name: "role", type: "bytes32" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getRoleMember",
+    stateMutability: "view",
+    inputs: [
+      { name: "role", type: "bytes32" },
+      { name: "index", type: "uint256" },
+    ],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "hasRole",
+    stateMutability: "view",
+    inputs: [
+      { name: "role", type: "bytes32" },
+      { name: "account", type: "address" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
     name: "setUIMultiplier",
     stateMutability: "nonpayable",
     inputs: [
@@ -682,6 +716,32 @@ export async function findMultiplierUpdater(
     functionName: "owner",
   });
   if (owner && !/^0x0{40}$/i.test(owner)) return owner;
+
+  // NVDAB uses an enumerable AccessControl-style admin role rather than owner().
+  // Discover members from the live contract; never assume or fabricate a role holder.
+  const defaultAdminRole = await tryRead<Hex>(client, {
+    address: asset,
+    abi: bstockAbi,
+    functionName: "DEFAULT_ADMIN_ROLE",
+  });
+  if (defaultAdminRole) {
+    const memberCount = await tryRead<bigint>(client, {
+      address: asset,
+      abi: bstockAbi,
+      functionName: "getRoleMemberCount",
+      functionArgs: [defaultAdminRole],
+    });
+    const boundedCount = Number(memberCount ?? 0n);
+    for (let index = 0; index < Math.min(boundedCount, 32); index += 1) {
+      const member = await tryRead<Address>(client, {
+        address: asset,
+        abi: bstockAbi,
+        functionName: "getRoleMember",
+        functionArgs: [defaultAdminRole, BigInt(index)],
+      });
+      if (member && !/^0x0{40}$/i.test(member)) return member;
+    }
+  }
 
   const latest = await client.getBlockNumber();
   const lookback = 500_000n;
