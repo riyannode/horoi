@@ -40,6 +40,7 @@ export type RunInput = {
   adapter?: ProtocolAdapter;
   holder?: Address;
   updater?: Address;
+  prepareForkTarget?: (args: { rpcUrl: string; asset: Address; blockNumber: bigint }) => Promise<Address>;
   dryRunTokenOnly?: boolean;
   onProgress?: (completed: number, total: number, stage: string) => void | Promise<void>;
 };
@@ -350,6 +351,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
   let completed = 0;
   const startedAt = Date.now();
   let fork: Awaited<ReturnType<typeof startAnvilFork>> | null = null;
+  let target = input.target;
 
   const progress = async (stage: string) => {
     completed = Math.min(total, completed + 1);
@@ -382,14 +384,21 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         fork = null;
       }
     }
+    if (fork && input.prepareForkTarget) {
+      target = await input.prepareForkTarget({
+        rpcUrl: fork.rpcUrl,
+        asset: input.asset,
+        blockNumber: fork.blockNumber,
+      });
+    }
     await progress("fork");
 
     let adapter: ProtocolAdapter | null = null;
-    if (input.target && input.profile !== "custody") {
+    if (target && input.profile !== "custody") {
       adapter = input.adapter ?? builtinAdapter(input.profile);
       base.adapterAvailable = true;
       base.adapterRedeemable = adapter.redeemable;
-    } else if (input.target && input.profile === "custody") {
+    } else if (target && input.profile === "custody") {
       // Generic custody has no standardized redemption ABI. Keep token-level checks
       // available but do not allow a full conformance PASS from a synthetic redeem.
       adapter = builtinAdapter("custody");
@@ -448,11 +457,11 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     }
     await progress("funding-and-probes");
 
-    if (fork && adapter && input.target && base.adapterAvailable && holder && baseAmount > 0n) {
+    if (fork && adapter && target && base.adapterAvailable && holder && baseAmount > 0n) {
       base.baseline = await baselineRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         multiplier: token.uiMultiplier,
@@ -470,12 +479,12 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     }
     await progress("baseline");
 
-    if (fork && adapter && input.target && base.adapterAvailable && holder && baseAmount > 0n && updater) {
+    if (fork && adapter && target && base.adapterAvailable && holder && baseAmount > 0n && updater) {
       const scenarios: NonNullable<EvaluationInput["scenarios"]> = {};
       const forward = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         oldMultiplier: token.uiMultiplier,
@@ -491,7 +500,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       const reverse = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         oldMultiplier: token.uiMultiplier,
@@ -504,7 +513,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       const dividend = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         oldMultiplier: token.uiMultiplier,
@@ -517,7 +526,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       scenarios.fractional = await fractionalRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         baseAmount,
         multiplier: token.uiMultiplier,
@@ -553,7 +562,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       blockHash: token.blockHash,
       testedAt: startedAt,
       asset: getAddress(input.asset),
-      target: input.target ? getAddress(input.target) : ZERO,
+      target: target ? getAddress(target) : ZERO,
       profile: input.profile,
       token: {
         decimals: token.decimals,
@@ -580,7 +589,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         blockHash: "0x",
         testedAt: startedAt,
         asset: input.asset,
-        target: input.target ?? ZERO,
+        target: target ?? ZERO,
         profile: input.profile,
         token: {
           decimals: 18,

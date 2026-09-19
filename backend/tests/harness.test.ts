@@ -45,15 +45,15 @@ function harnessInput(incompatible = false): EvaluationInput {
   };
 }
 
-describe("Horoi integration harness conformance", () => {
-  test("RUN A compatible harness passes H101-H110", () => {
+describe("integration check engine unit tests", () => {
+  test("synthetic compatible input evaluates H101-H110 as passing", () => {
     const checks = evaluateIntegrationChecks(harnessInput());
     expect(checks.filter((item) => item.id.startsWith("H1")).length).toBe(10);
     expect(checks.filter((item) => item.id.startsWith("H1")).every((item) => item.status === "PASS")).toBe(true);
     expect(evaluateStatus(checks)).toBe("PASS");
   });
 
-  test("RUN B TEST/INCOMPATIBLE fixture fails on stale effective claim", () => {
+  test("synthetic incompatible input fails H103 on stale effective claim", () => {
     const checks = evaluateIntegrationChecks(harnessInput(true));
     const forward = checks.find((item) => item.id === "H103");
     expect(forward?.status).toBe("FAIL");

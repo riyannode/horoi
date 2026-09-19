@@ -54,6 +54,34 @@ proportional claims, fractional raw amounts, and the deliberate incompatible fix
 The adapter boundary exposes `setup`, `deposit`, `position`, `expectedClaim`, and
 `redeem`; only the engine assigns verdicts.
 
+`backend/tests/harness.test.ts` is an engine unit test using synthetic `EvaluationInput`;
+it is not integration evidence. The pinned-fork release smoke below deploys each target
+inside `runConformance`'s isolated BSC fork and prints the actual H101-H110 reports.
+
+### Pinned-fork harness release smoke
+
+After `bun install --frozen-lockfile`, run:
+
+```bash
+forge build
+BSC_RPC_URL="${BSC_ARCHIVE_RPC_URL:?set BSC_ARCHIVE_RPC_URL}" bun run smoke:fork
+```
+
+The command pins NVDAB to BSC block `122846004`, verifies chain ID `56`, deploys
+`HoroiVault` and `NaiveHoroiVault` on separate isolated forks, then runs each through
+the real adapter and `runConformance` path. It discovers the multiplier updater from
+fork state, performs real deposits, position reads, multiplier changes, and redemption,
+and prints the report metadata, H101-H110 statuses, and `resultHash` for both targets.
+If holder discovery is rate-limited, set `HOROI_HOLDER_ADDRESS` to a funded holder at
+the pinned block and rerun the same command.
+
+The pinned state requires an archive-capable RPC. In the latest rerun,
+`bsc.publicnode.com` required a personal token for historical state and the public
+`bsc-dataseed.bnbchain.org` endpoint returned `missing trie node` at block `122846004`.
+Those attempts produced `ERROR` reports before fork startup; they are not conformance
+evidence. Supply the archive endpoint through `BSC_ARCHIVE_RPC_URL` before claiming a
+full harness result.
+
 ## Publication simulation tests
 
 - exact `HoroiRegistry.publish` calldata and report arguments;

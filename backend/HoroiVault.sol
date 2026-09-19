@@ -20,6 +20,7 @@ contract HoroiVault {
     error InvalidAsset();
     error InvalidAmount();
     error InvalidReceiver();
+    error UnauthorizedOwner();
     error InsufficientShares();
     error TransferFailed();
 
@@ -53,6 +54,7 @@ contract HoroiVault {
     }
 
     function redeem(uint256 shares, address receiver, address owner) public nonReentrant returns (uint256 assets) {
+        if (msg.sender != owner) revert UnauthorizedOwner();
         if (shares == 0 || shares > balanceOf[owner]) revert InsufficientShares();
         if (receiver == address(0)) revert InvalidReceiver();
         assets = previewRedeem(shares);
@@ -64,6 +66,7 @@ contract HoroiVault {
     }
 
     function withdraw(uint256 assets, address receiver, address owner) external returns (uint256 shares) {
+        if (msg.sender != owner) revert UnauthorizedOwner();
         if (assets == 0 || assets > totalRawAssets) revert InvalidAmount();
         shares = (assets * totalShares + totalRawAssets - 1) / totalRawAssets;
         redeem(shares, receiver, owner);
