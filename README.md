@@ -28,15 +28,15 @@ Only three top-level directories (plus root config files):
 
 ## Architecture and current implementation
 
-- `backend/chain.ts` validates BSC chain ID `56`, reads BEP-677/EIP-8056 state, and manages isolated Anvil forks.
-- `backend/engine.ts` evaluates deterministic H001–H110 checks and computes `suiteHash`/`resultHash`.
-- `backend/adapters.ts` contains custody and ERC-4626-like adapter boundaries.
+- `backend/chain.ts` validates BSC chain ID `56`, reads BEP-677/EIP-8056 state, discovers NVDAB's enumerable admin updater, and manages isolated Anvil forks.
+- `backend/engine.ts` evaluates deterministic H001–H110 checks and computes `HOROI-BSTOCK-1@1.2.0` `suiteHash`/`resultHash`.
+- `backend/adapters.ts` contains custody, ERC-4626-like, and transparent `HoroiVault` harness adapter boundaries.
 - `backend/binance.ts` keeps signed Binance Web3 RWA, Transaction, and Wallet context separate from conformance truth.
 - `backend/api.ts` exposes inspection, RWA context, runs, reports, exact publication payloads, and simulation preflight.
 - `frontend/` provides the judge-facing run/result/report flow with explicit BSC mainnet versus local fork labels.
 - `backend/HoroiRegistry.sol` anchors report summaries only; it has no custody, upgrade proxy, or arbitrary execution.
 
-The current source verifies the real NVDAB contract and a real fork transfer/conversion/UI-balance path. Full integration remains `INCOMPLETE` until a real NVDAB-compatible target and authorized multiplier transition path are supplied.
+The source verifies the real NVDAB contract and a pinned fork transition through its discovered `DEFAULT_ADMIN_ROLE` member. `backend/HoroiVault.sol` is a production-neutral integration harness; `backend/tests/NaiveHoroiVault.sol` is an explicitly labeled incompatible fixture. Neither represents an external third-party protocol.
 
 ## Requirements
 
@@ -60,6 +60,7 @@ bun install
 | `bun run verify` | typecheck + tests + contract tests + frontend build |
 | `bun backend/cli.ts inspect <asset>` | Inspect a bStock |
 | `bun backend/cli.ts test <asset> <target> --profile erc4626` | Full conformance run |
+| `bun backend/cli.ts simulate-publish <runId> --from <publisher>` | Simulate exact HoroiRegistry calldata through Binance Transaction API |
 
 Exit codes for CLI `test`: `0` PASS, `1` FAIL, `2` INCOMPLETE, `3` error, `4` usage.
 
@@ -72,6 +73,7 @@ Copy `.env.example` to `.env`. Never commit private keys.
 | `BSC_RPC_URL` | BSC mainnet RPC |
 | `DATABASE_PATH` | SQLite path |
 | `REGISTRY_ADDRESS` | Deployed HoroiRegistry |
+| `HOROI_PUBLISHER_ADDRESS` | Publisher address used by CLI simulation |
 | `BINANCE_API_KEY` | Binance Web3 API key, backend only |
 | `BINANCE_API_SECRET` | Binance Web3 signing secret, backend only |
 | `BINANCE_WEB3_BASE_URL` | Defaults to `https://web3.binance.com/build` |
@@ -114,7 +116,9 @@ export BSC_RPC_URL=https://bsc-dataseed.bnbchain.org
 bun backend/cli.ts inspect 0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436 --json
 ```
 
-For a full PASS/FAIL conformance result you also need a real target integration, preferably an ERC-4626-like vault whose `asset()` is the bStock. Token-only or generic custody runs intentionally remain INCOMPLETE for integration checks.
+For a full PASS/FAIL conformance result against a target, use an ERC-4626-like vault whose `asset()` is the bStock, or the transparent HoroiVault harness for conformance development. Token-only or generic custody runs intentionally remain INCOMPLETE for integration checks.
+
+The current PR does not deploy HoroiRegistry, publish a report, or perform Wallet API readback. Without `REGISTRY_ADDRESS`, `horoi simulate-publish` exits non-zero with `REGISTRY_NOT_CONFIGURED`.
 
 ## Limitations / disclaimer
 

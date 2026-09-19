@@ -1,4 +1,4 @@
-# Tests (HOROI-BSTOCK-1 v1.1.0)
+# Tests (HOROI-BSTOCK-1 v1.2.0)
 
 Statuses: `PASS` / `FAIL` / `INCOMPLETE` / `SKIP` / `ERROR`.
 
@@ -49,9 +49,24 @@ Pure split: effective quantity changes inversely with unit price; notional conse
 
 R001–R020 in `backend/HoroiRegistry.t.sol` — roles, publish/revoke, zero-address/hash/status reverts, duplicate, reportId parity, fuzz, no ETH custody, gas snapshot.
 
+`HoroiVault.t.sol` covers the transparent harness deposit/redeem path, two-user
+proportional claims, fractional raw amounts, and the deliberate incompatible fixture.
+The adapter boundary exposes `setup`, `deposit`, `position`, `expectedClaim`, and
+`redeem`; only the engine assigns verdicts.
+
+## Publication simulation tests
+
+- exact `HoroiRegistry.publish` calldata and report arguments;
+- official Transaction API request shape (`binanceChainId` + `evmTx`);
+- payload hash changes for chain/from/to/value/data changes;
+- business-code failures are not treated as HTTP success;
+- persisted run/payload/attempt/success/code/latency/evidence/error/timestamp fields;
+- credentials and signing headers are never persisted.
+
 ## Observed release-session evidence
 
 - Direct NVDAB BSC inspection: chain `56`; H001/H002/H003/H004 pass; all optional interface probes are true.
 - Pinned Anvil smoke with a real holder and a real transfer receipt: H005, H007, and H008 pass.
-- Multiplier update with an unauthorized/unknown updater is reported as H006 `INCOMPLETE` (`FORK_MUTATION_UNAVAILABLE`); no storage mutation is used.
-- Token-only/custody runs keep H101–H110 `INCOMPLETE` because custody has no standardized deposit/redeem target. A full integration run requires an actual target that accepts NVDAB.
+- NVDAB authorization discovery found no callable `owner()`, an enumerable `DEFAULT_ADMIN_ROLE` member, and a working admin `setUIMultiplier` path on an isolated fork. Independent 2.0x, 0.1x, and 1.008x transitions passed pre/post-effective checks; no storage mutation was used.
+- Token-only/custody runs keep H101–H110 `INCOMPLETE` because custody has no standardized deposit/redeem target. The transparent HoroiVault harness provides the production-neutral integration target; it is not an external protocol.
+- Live Binance publication simulation is `BLOCKED_REGISTRY_NOT_DEPLOYED` because this PR does not invent or deploy `REGISTRY_ADDRESS`.
