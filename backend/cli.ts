@@ -12,6 +12,7 @@ import { runConformance, publishPayload } from "./runner";
 import { openDb, getRun } from "./db";
 import { computeReportId, SUITE_HASH } from "./engine";
 import { BinanceWeb3Client, attachRwaContext } from "./binance";
+import { isRwaContextSufficient } from "./rwa-context";
 
 const usage = () => {
   console.log(`horoi discover <ticker-or-address> [--json]
@@ -78,12 +79,7 @@ async function main() {
     }
     const context = await new BinanceWeb3Client().getRwaContext(parsed);
     console.log(JSON.stringify(context, null, 2));
-    const identityResolved = context.selectedAsset?.binanceChainId === "56"
-      && context.selectedAsset.tokenContractAddress?.toLowerCase() === parsed.toLowerCase();
-    const identityCallPassed = context.calls.some(
-      (call) => call.operation === "searchRwaToken" && call.success,
-    );
-    process.exit(identityResolved && identityCallPassed ? 0 : 5);
+    process.exit(isRwaContextSufficient(context, parsed) ? 0 : 5);
   }
 
   if (cmd === "inspect") {
