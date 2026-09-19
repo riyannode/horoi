@@ -167,6 +167,7 @@ async function baselineRun(args: {
     await args.adapter.setup(ctx);
     await args.adapter.deposit(ctx, args.amount);
     const position = await args.adapter.position(ctx, USER_A);
+    const expected = await args.adapter.expectedClaim(ctx, USER_A);
     let returnedRaw: bigint | undefined;
     if (args.adapter.redeemable && (position.shareBalance ?? 0n) > 0n) {
       returnedRaw = (await args.adapter.redeem(ctx, position.shareBalance as bigint)).returnedRaw;
@@ -176,7 +177,7 @@ async function baselineRun(args: {
       rawClaim: position.rawClaim,
       shares: position.shareBalance,
       returnedRaw,
-      expectedRaw: position.rawClaim,
+      expectedRaw: expected.rawClaim,
     };
   } catch (error) {
     return { deposited: false, error: String(error) };
@@ -220,6 +221,7 @@ async function scenarioRun(args: {
     if (args.twoUsers) await args.adapter.deposit(ctxB, args.amount * 2n);
 
     const beforeA = await args.adapter.position(ctxA, USER_A);
+    const expectedBeforeA = await args.adapter.expectedClaim(ctxA, USER_A);
     const beforeB = args.twoUsers ? await args.adapter.position(ctxB, USER_B) : undefined;
     if (beforeA.rawClaim <= 0n) throw new Error("zero raw claim after deposit");
 
@@ -241,6 +243,7 @@ async function scenarioRun(args: {
     const afterCtxA = { ...ctxA, uiMultiplier: postActiveMultiplier };
     const afterCtxB = { ...ctxB, uiMultiplier: postActiveMultiplier };
     const afterA = await args.adapter.position(afterCtxA, USER_A);
+    const expectedAfterA = await args.adapter.expectedClaim(afterCtxA, USER_A);
     const afterB = args.twoUsers ? await args.adapter.position(afterCtxB, USER_B) : undefined;
 
     let returnedRaw: bigint | undefined;
@@ -252,11 +255,11 @@ async function scenarioRun(args: {
       label: args.label,
       requestedMultiplier: args.newMultiplier,
       activeMultiplier: postActiveMultiplier,
-      rawBefore: beforeA.rawClaim,
+      rawBefore: expectedBeforeA.rawClaim,
       rawAfter: afterA.rawClaim,
-      effectiveBefore: effectiveAmount(beforeA.rawClaim, args.oldMultiplier),
-      effectiveAfter: effectiveAmount(afterA.rawClaim, postActiveMultiplier),
-      expectedEffectiveAfter: effectiveAmount(beforeA.rawClaim, args.newMultiplier),
+      effectiveBefore: beforeA.effectiveClaim,
+      effectiveAfter: afterA.effectiveClaim,
+      expectedEffectiveAfter: expectedAfterA.effectiveClaim,
       returnedRaw,
       sharesBefore: beforeA.shareBalance,
       txHash,
