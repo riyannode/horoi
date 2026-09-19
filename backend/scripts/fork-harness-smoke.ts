@@ -86,6 +86,7 @@ function reportEvidence(report: HoroiReport) {
     blockHash: report.blockHash,
     asset: report.asset,
     target: report.target,
+    profile: report.profile,
     suiteId: report.suiteId,
     suiteVersion: report.suiteVersion,
     suiteHash: report.suiteHash,
@@ -129,7 +130,7 @@ async function runFixture(fixture: Fixture): Promise<{ report: HoroiReport; depl
     runId: `pinned-nvdab-${fixture}`,
     asset: NVDAB,
     target: null,
-    profile: "erc4626",
+    profile: "custom",
     blockNumber: PINNED_BLOCK,
     rpcUrl: DEFAULT_RPC,
     adapter,
@@ -144,6 +145,9 @@ async function runFixture(fixture: Fixture): Promise<{ report: HoroiReport; depl
 function verifyReport(run: { report: HoroiReport; deployment: Deployment | null }, fixture: Fixture): void {
   const { report, deployment } = run;
   const integrationChecks = report.checks.filter((item) => item.id.startsWith("H1"));
+  if (report.profile !== "custom") {
+    throw new Error(`${fixture} report profile must be custom`);
+  }
   if (report.chainId !== 56 || report.blockNumber !== Number(PINNED_BLOCK) || report.blockHash === "0x") {
     throw new Error(`${fixture} report did not use the pinned BSC block`);
   }
