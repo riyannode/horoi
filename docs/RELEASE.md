@@ -1,5 +1,7 @@
 # Horoi v1.1 Release Candidate Gate
 
+Repository: https://github.com/riyannode/horoi
+
 This archive is a hardened release candidate, not a claim that runtime verification occurred inside the packaging environment.
 
 ## Source-level fixes included

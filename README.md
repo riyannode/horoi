@@ -2,6 +2,8 @@
 
 Horoi is tokenized-stock DeFi conformance infrastructure for BNB Smart Chain that tests whether integrations preserve the economic semantics of bStocks across multiplier changes, dividends, stock splits, reverse splits, and scheduled transitions.
 
+Repository: https://github.com/riyannode/horoi
+
 ## Problem and thesis
 
 A token can be BEP-20 compatible and still be economically incompatible with a DeFi integration. Horoi tests raw versus effective claims when BEP-677 / EIP-8056 multiplier semantics change, rather than treating successful transfers as proof of economic compatibility.
