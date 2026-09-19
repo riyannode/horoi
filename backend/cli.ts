@@ -78,7 +78,12 @@ async function main() {
     }
     const context = await new BinanceWeb3Client().getRwaContext(parsed);
     console.log(JSON.stringify(context, null, 2));
-    process.exit(context.calls.every((call) => call.success) ? 0 : 5);
+    const identityResolved = context.selectedAsset?.binanceChainId === "56"
+      && context.selectedAsset.tokenContractAddress?.toLowerCase() === parsed.toLowerCase();
+    const identityCallPassed = context.calls.some(
+      (call) => call.operation === "searchRwaToken" && call.success,
+    );
+    process.exit(identityResolved && identityCallPassed ? 0 : 5);
   }
 
   if (cmd === "inspect") {

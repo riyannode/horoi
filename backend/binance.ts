@@ -115,6 +115,24 @@ function callFailure(module: string, operation: string, endpointId: string, erro
   return { module, operation, endpointId, success: false, latencyMs: 0, errorCode };
 }
 
+function normalizedRwaSearchItems(body: JsonObject): RwaAsset[] {
+  return responseItems(body).flatMap((item) => {
+    const nestedAssets = Array.isArray(item.assets)
+      ? item.assets.filter(isObject)
+      : [item];
+    return nestedAssets.map((asset) => ({
+      ticker: asString(item.ticker) ?? asString(asset.ticker),
+      companyName: asString(item.companyName) ?? asString(asset.companyName),
+      platformId: asString(asset.platformId) ?? asString(item.platformId),
+      binanceChainId: asString(asset.binanceChainId) ?? asString(item.binanceChainId),
+      tokenContractAddress: asString(asset.tokenContractAddress) ?? asString(item.tokenContractAddress),
+      tokenSymbol: asString(asset.tokenSymbol) ?? asString(item.tokenSymbol),
+      tokenName: asString(asset.tokenName) ?? asString(item.tokenName),
+      underlyingTicker: asString(asset.underlyingTicker) ?? asString(item.underlyingTicker),
+    }));
+  });
+}
+
 export class BinanceWeb3Client {
   readonly apiKey = process.env.BINANCE_API_KEY?.trim() || "";
   private readonly secret = process.env.BINANCE_API_SECRET?.trim() || "";
@@ -206,16 +224,7 @@ export class BinanceWeb3Client {
       query: { keyword, platformId: "bstock" },
     });
     return {
-      items: responseItems(response.body).map((item) => ({
-        ticker: asString(item.ticker),
-        companyName: asString(item.companyName),
-        platformId: asString(item.platformId),
-        binanceChainId: asString(item.binanceChainId),
-        tokenContractAddress: asString(item.tokenContractAddress),
-        tokenSymbol: asString(item.tokenSymbol),
-        tokenName: asString(item.tokenName),
-        underlyingTicker: asString(item.underlyingTicker),
-      })),
+      items: normalizedRwaSearchItems(response.body),
       call: response.call,
     };
   }
@@ -266,7 +275,22 @@ export class BinanceWeb3Client {
         query: { tokenContractAddress: address },
       });
       calls.push(profile.call);
-      underlying = responseObject(profile.body);
+      if (profile.call.success) underlying = responseObject(profile.body) ?? underlying;
+
+      const tokenList = await this.request({
+        module: "RWA_DATA",
+        operation: "getRwaTokenList",
+        path: "/api/v1/dex/market/rwa/tokens",
+        query: { binanceChainId: BSC_CHAIN, platformId: selectedAsset?.platformId ?? "bstock" },
+      });
+      calls.push(tokenList.call);
+      const tokenItem = responseItems(tokenList.body).find(
+        (item) => asString(item.tokenContractAddress)?.toLowerCase() === address.toLowerCase(),
+      );
+      if (tokenItem) {
+        underlying ??= tokenItem;
+        market ??= tokenItem;
+      }
 
       const marketResponse = await this.request({
         module: "RWA_DATA",
@@ -275,7 +299,7 @@ export class BinanceWeb3Client {
         query: { tokenContractAddress: address },
       });
       calls.push(marketResponse.call);
-      market = responseObject(marketResponse.body);
+      if (marketResponse.call.success) market = responseObject(marketResponse.body) ?? market;
     }
 
     const normalized = {
