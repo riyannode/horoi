@@ -10,8 +10,8 @@ import { ErrorCodes, type ErrorCode } from "./errors";
 
 export const MULTIPLIER_ONE = 10n ** 18n;
 export const SUITE_ID = "HOROI-BSTOCK-1";
-export const SUITE_VERSION = "1.1.0";
-export const REPORT_VERSION = "1.1.0";
+export const SUITE_VERSION = "1.2.0";
+export const REPORT_VERSION = "1.2.0";
 
 export type ProfileKind = "custody" | "erc4626" | "custom";
 export type CheckStatus = "PASS" | "FAIL" | "INCOMPLETE" | "SKIP" | "ERROR";
@@ -49,19 +49,28 @@ const SUITE_MANIFEST = {
   checks: [...SUITE_CHECKS].sort((a, b) => a.id.localeCompare(b.id)),
 };
 
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_, current) => {
-    if (typeof current === "bigint") return current.toString();
-    if (current && typeof current === "object" && !Array.isArray(current)) {
-      const object = current as Record<string, unknown>;
-      const sorted: Record<string, unknown> = {};
-      for (const key of Object.keys(object).sort()) {
-        if (object[key] !== undefined) sorted[key] = object[key];
-      }
-      return sorted;
+function canonicalize(value: unknown, path: string = "$"): unknown {
+  if (value === undefined) throw new Error(`undefined value at ${path}`);
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`non-finite number at ${path}`);
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map((item, index) => canonicalize(item, `${path}[${index}]`));
+  if (typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(object).sort()) {
+      sorted[key] = canonicalize(object[key], `${path}.${key}`);
     }
-    return current;
-  });
+    return sorted;
+  }
+  throw new Error(`unsupported value at ${path}`);
+}
+
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
 }
 
 export const SUITE_HASH: Hex = keccak256(toHex(canonicalJson(SUITE_MANIFEST)));
@@ -297,7 +306,13 @@ export function computeResultHash(report: Omit<HoroiReport, "resultHash">): Hex 
     asset: report.asset,
     target: report.target,
     profile: report.profile,
-    token: report.token,
+    token: {
+      decimals: report.token.decimals,
+      uiMultiplier: report.token.uiMultiplier,
+      newUIMultiplier: report.token.newUIMultiplier,
+      effectiveAt: report.token.effectiveAt,
+      supportedInterfaces: [...report.token.supportedInterfaces].sort(),
+    },
     checks: checks.map((item) => ({
       id: item.id,
       required: item.required,
@@ -307,8 +322,20 @@ export function computeResultHash(report: Omit<HoroiReport, "resultHash">): Hex 
       evidence: item.evidence ?? null,
       errorCode: item.errorCode ?? null,
     })),
-    summary: report.summary,
-    economics: report.economics ?? null,
+    summary: {
+      requiredPassed: report.summary.requiredPassed,
+      requiredFailed: report.summary.requiredFailed,
+      requiredIncomplete: report.summary.requiredIncomplete,
+      optionalPassed: report.summary.optionalPassed,
+      optionalFailed: report.summary.optionalFailed,
+      optionalSkipped: report.summary.optionalSkipped,
+    },
+    economics: report.economics
+      ? {
+          before: report.economics.before ?? null,
+          after: report.economics.after ?? null,
+        }
+      : null,
   };
   return keccak256(toHex(canonicalJson(payload)));
 }
