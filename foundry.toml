@@ -1,6 +1,6 @@
 [profile.default]
 src = "backend"
-test = "backend/test"
+test = "backend/tests"
 out = "out"
 libs = []
 solc = "0.8.37"
