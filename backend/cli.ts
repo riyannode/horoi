@@ -9,10 +9,11 @@ const parseAddr = (v: string | undefined): `0x${string}` | null => {
 import { inspectToken } from "./chain";
 import { ErrorCodes } from "./errors";
 import { runConformance, publishPayload } from "./runner";
-import { openDb, getRun } from "./db";
+import { openDb, getRun, upsertSimulation } from "./db";
 import { computeReportId, SUITE_HASH } from "./engine";
 import { BinanceWeb3Client, attachRwaContext } from "./binance";
 import { isRwaContextSufficient } from "./rwa-context";
+import { buildPublicationTransaction } from "./publication";
 
 const usage = () => {
   console.log(`horoi discover <ticker-or-address> [--json]
@@ -20,6 +21,7 @@ horoi inspect <asset>
 horoi context <asset> [--json]
 horoi test <asset> <target|-> --profile erc4626|custody [--block <n>] [--holder <address>] [--updater <address>]
 horoi report <runId> [--json]
+horoi simulate-publish <runId> [--from <publisher>]
 horoi publish <runId>
 `);
 };
@@ -39,15 +41,18 @@ const profileIdx = rest.findIndex((a: string) => a === "--profile");
 const blockIdx = rest.findIndex((a: string) => a === "--block");
 const holderIdx = rest.findIndex((a: string) => a === "--holder");
 const updaterIdx = rest.findIndex((a: string) => a === "--updater");
+const fromIdx = rest.findIndex((a: string) => a === "--from");
 const profile = profileIdx >= 0 ? rest[profileIdx + 1] : undefined;
 const blockNumber = blockIdx >= 0 ? rest[blockIdx + 1] : undefined;
 const holderArg = holderIdx >= 0 ? rest[holderIdx + 1] : undefined;
 const updaterArg = updaterIdx >= 0 ? rest[updaterIdx + 1] : undefined;
+const fromArg = fromIdx >= 0 ? rest[fromIdx + 1] : undefined;
 const skip = new Set<number>();
 if (profileIdx >= 0) skip.add(profileIdx + 1);
 if (blockIdx >= 0) skip.add(blockIdx + 1);
 if (holderIdx >= 0) skip.add(holderIdx + 1);
 if (updaterIdx >= 0) skip.add(updaterIdx + 1);
+if (fromIdx >= 0) skip.add(fromIdx + 1);
 const positional = rest.filter((a: string, i: number) => !a.startsWith("--") && !skip.has(i));
 
 async function main() {
@@ -196,6 +201,64 @@ async function main() {
     }
     console.log(row.report_json);
     process.exit(0);
+  }
+
+  if (cmd === "simulate-publish") {
+    const runId = positional[0];
+    if (!runId) process.exit(4);
+    const db = openDb(process.env.DATABASE_PATH ?? "./horoi.db");
+    const row = getRun(db, runId);
+    if (!row?.report_json) {
+      console.error("INPUT_INVALID");
+      process.exit(6);
+    }
+    const report = JSON.parse(row.report_json);
+    if (report.status === "ERROR") {
+      console.error("INPUT_INVALID");
+      process.exit(6);
+    }
+    const registry = parseAddr(process.env.REGISTRY_ADDRESS);
+    if (!registry) {
+      console.error("REGISTRY_NOT_CONFIGURED");
+      process.exit(6);
+    }
+    const from = parseAddr(fromArg ?? process.env.HOROI_PUBLISHER_ADDRESS ?? process.env.PUBLISHER_ADDRESS);
+    if (!from) {
+      console.error(ErrorCodes.PUBLISHER_NOT_CONFIGURED);
+      process.exit(6);
+    }
+    try {
+      const transaction = buildPublicationTransaction(report, from, registry);
+      const simulation = await new BinanceWeb3Client().simulatePublication(transaction);
+      const reportId = computeReportId({
+        chainId: report.chainId,
+        asset: report.asset,
+        target: report.target,
+        suiteHash: report.suiteHash,
+        resultHash: report.resultHash,
+        blockNumber: report.blockNumber,
+      });
+      upsertSimulation(db, {
+        report_id: reportId,
+        run_id: row.id,
+        payload_hash: simulation.payloadHash,
+        payload_json: JSON.stringify(transaction),
+        result_json: JSON.stringify(simulation),
+        attempted: simulation.attempted ? 1 : 0,
+        success: simulation.success ? 1 : 0,
+        upstream_code: simulation.upstreamCode ?? null,
+        latency_ms: simulation.latencyMs ?? null,
+        evidence_hash: simulation.evidenceHash,
+        error_code: simulation.errorCode ?? null,
+        simulated_at: simulation.simulatedAt,
+        captured_at: Date.now(),
+      });
+      console.log(JSON.stringify({ reportId, transaction, publicationPayloadHash: simulation.payloadHash, simulation }, null, 2));
+      process.exit(simulation.success ? 0 : 6);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : "TX_SIMULATION_FAILED");
+      process.exit(6);
+    }
   }
 
   if (cmd === "publish") {

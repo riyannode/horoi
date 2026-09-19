@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { RwaContext } from "../binance";
+import { computeRwaContextHash, type RwaContext } from "../binance";
 import { isRwaContextSufficient } from "../rwa-context";
 
 const ASSET = "0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436";
@@ -64,5 +64,14 @@ describe("RWA context sufficiency", () => {
         { module: "RWA_DATA", operation: "getRwaUnderlyingMarket", endpointId: "GET market", success: false, upstreamCode: "40001", latencyMs: 1 },
       ],
     }), ASSET)).toBe(true);
+  });
+
+  test("normalized Binance context changes contextHash without touching resultHash", () => {
+    const original = context();
+    const hash = computeRwaContextHash(original);
+    expect(computeRwaContextHash({ ...original, tokenPrice: "223.17" })).not.toBe(hash);
+    expect(computeRwaContextHash({ ...original, market: { statusInfo: { openState: false } } })).not.toBe(hash);
+    expect(computeRwaContextHash({ ...original, capturedAt: 2 })).not.toBe(hash);
+    expect(computeRwaContextHash({ ...original, calls: [{ ...original.calls[0]!, latencyMs: 2 }, ...original.calls.slice(1) ] })).not.toBe(hash);
   });
 });

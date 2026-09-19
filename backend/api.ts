@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
-import { encodeFunctionData, getAddress, isAddress, type Address, type Hex } from "viem";
+import { getAddress, isAddress, type Address, type Hex } from "viem";
 import { CHAIN_ID, inspectToken } from "./chain";
-import { BinanceWeb3Client, attachRwaContext, binanceHealth } from "./binance";
+import { BinanceWeb3Client, attachRwaContext, binanceHealth, publicationPayloadHash, type PublicationTransaction } from "./binance";
 import { ErrorCodes, HoroiError, httpStatusFor } from "./errors";
 import { SUITE_HASH, SUITE_ID, SUITE_VERSION, computeReportId } from "./engine";
 import {
@@ -16,34 +16,25 @@ import {
   upsertSimulation,
 } from "./db";
 import { publishPayload, runConformance } from "./runner";
+import { buildPublicationTransaction } from "./publication";
 
 const db = openDb(process.env.DATABASE_PATH ?? "./horoi.db");
 recoverInterruptedRuns(db);
 
-const registryAddress = process.env.REGISTRY_ADDRESS ? getAddress(process.env.REGISTRY_ADDRESS) : null;
+const registryAddress = (() => {
+  const configured = process.env.REGISTRY_ADDRESS?.trim();
+  if (!configured) return null;
+  return isAddress(configured, { strict: false }) ? getAddress(configured) : null;
+})();
 const maxConcurrentRuns = Math.max(1, Number(process.env.MAX_CONCURRENT_RUNS ?? 2));
 const activeRuns = new Set<string>();
-
-const registryAbi = [{
-  type: "function",
-  name: "publish",
-  stateMutability: "nonpayable",
-  inputs: [
-    { name: "asset", type: "address" },
-    { name: "target", type: "address" },
-    { name: "suiteHash", type: "bytes32" },
-    { name: "resultHash", type: "bytes32" },
-    { name: "blockNumber", type: "uint64" },
-    { name: "status", type: "uint8" },
-  ],
-  outputs: [{ name: "reportId", type: "bytes32" }],
-}] as const;
 
 type HoroiPublishReport = {
   status: string;
   chainId: number;
   asset: string;
   target: string;
+  profile: string;
   blockNumber: number;
   resultHash: string;
   suiteHash: string;
@@ -80,31 +71,20 @@ function reportIdFor(report: HoroiPublishReport): Hex {
   });
 }
 
-function statusForRegistry(status: string): 1 | 2 | 3 {
-  if (status === "PASS") return 1;
-  if (status === "FAIL") return 2;
-  if (status === "INCOMPLETE") return 3;
-  throw new HoroiError(ErrorCodes.INPUT_INVALID, "ERROR reports cannot be published");
+function registryForSimulation(): Address {
+  if (process.env.REGISTRY_ADDRESS && !registryAddress) {
+    throw new HoroiError(ErrorCodes.ADDRESS_INVALID, "REGISTRY_ADDRESS is invalid");
+  }
+  if (!registryAddress) throw new HoroiError(ErrorCodes.REGISTRY_NOT_CONFIGURED, "REGISTRY_ADDRESS is not configured");
+  return registryAddress;
 }
 
-function publicationCall(report: HoroiPublishReport, from: Address, registry: Address) {
-  const args = {
-    asset: asAddress(report.asset),
-    target: asAddress(report.target),
-    suiteHash: report.suiteHash as Hex,
-    resultHash: report.resultHash as Hex,
-    blockNumber: BigInt(report.blockNumber),
-    status: statusForRegistry(report.status),
-  } as const;
-  const data = encodeFunctionData({ abi: registryAbi, functionName: "publish", args: [
-    args.asset,
-    args.target,
-    args.suiteHash,
-    args.resultHash,
-    args.blockNumber,
-    args.status,
-  ] });
-  return { from, to: registry, value: "0", data };
+function assertReportBinding(row: { id: string; asset: string; target: string | null; profile: string; chain_id: number }, report: HoroiPublishReport): void {
+  if (report.chainId !== row.chain_id || report.asset.toLowerCase() !== row.asset.toLowerCase()
+    || (report.target === "0x0000000000000000000000000000000000000000" ? null : report.target.toLowerCase()) !== row.target?.toLowerCase()
+    || report.profile !== row.profile) {
+    throw new HoroiError(ErrorCodes.PUBLICATION_MISMATCH, "report JSON does not match persisted run identity");
+  }
 }
 
 async function executeRun(args: {
@@ -371,11 +351,29 @@ export const app = new Elysia({ prefix: "/api" })
     }
     const reportId = reportIdFor(report);
     const savedSimulation = getSimulation(db, reportId);
+    let simulation: unknown = null;
+    let simulationStale = false;
+    if (savedSimulation) {
+      try {
+        const savedPayload = JSON.parse(savedSimulation.payload_json) as PublicationTransaction;
+        const currentRegistry = registryAddress;
+        if (currentRegistry && publicationPayloadHash({ ...savedPayload, to: currentRegistry }) === savedSimulation.payload_hash) {
+          simulation = JSON.parse(savedSimulation.result_json);
+        } else {
+          simulationStale = true;
+        }
+      } catch {
+        simulationStale = true;
+      }
+    }
     return {
       registry: registryAddress,
+      publicationStatus: registryAddress ? "READY_FOR_SIMULATION" : "BLOCKED_REGISTRY_NOT_DEPLOYED",
       args: publishPayload(report as never, registryAddress).args,
       reportId,
-      simulation: savedSimulation ? JSON.parse(savedSimulation.result_json) : null,
+      simulation,
+      simulationStale,
+      publicationPayloadHash: savedSimulation?.payload_hash ?? null,
       note: "This endpoint never broadcasts. Sign from a wallet holding PUBLISHER_ROLE.",
     };
   })
@@ -383,23 +381,34 @@ export const app = new Elysia({ prefix: "/api" })
     "/reports/:id/simulate-publication",
     async ({ params, body, set }) => {
       try {
-        if (!registryAddress) throw new HoroiError(ErrorCodes.REGISTRY_NOT_CONFIGURED, "REGISTRY_ADDRESS is not configured");
+        const registry = registryForSimulation();
         const row = getRun(db, params.id);
         if (!row?.report_json) throw new HoroiError(ErrorCodes.INPUT_INVALID, "report not found or not terminal");
         const report = JSON.parse(row.report_json) as HoroiPublishReport;
-        const tx = publicationCall(report, asAddress(body.from), registryAddress);
+        if (report.status === "ERROR") throw new HoroiError(ErrorCodes.INPUT_INVALID, "ERROR reports cannot be simulated");
+        assertReportBinding(row, report);
+        const tx = buildPublicationTransaction(report, body.from, registry);
+        const previous = getSimulation(db, reportIdFor(report));
         const simulation = await new BinanceWeb3Client().simulatePublication(tx);
         const reportId = reportIdFor(report);
         upsertSimulation(db, {
           report_id: reportId,
+          run_id: row.id,
           payload_hash: simulation.payloadHash,
           payload_json: JSON.stringify(tx),
           result_json: JSON.stringify(simulation),
+          attempted: simulation.attempted ? 1 : 0,
+          success: simulation.success ? 1 : 0,
+          upstream_code: simulation.upstreamCode ?? null,
+          latency_ms: simulation.latencyMs ?? null,
+          evidence_hash: simulation.evidenceHash,
+          error_code: simulation.errorCode ?? null,
+          simulated_at: simulation.simulatedAt,
           captured_at: Date.now(),
         });
         if (!simulation.attempted) throw new HoroiError(ErrorCodes.BINANCE_API_NOT_CONFIGURED, "Binance Transaction API is not configured");
         set.status = simulation.success ? 200 : 424;
-        return { reportId, transaction: tx, simulation };
+        return { reportId, transaction: tx, publicationPayloadHash: simulation.payloadHash, previousSimulationStale: Boolean(previous && previous.payload_hash !== simulation.payloadHash), simulation };
       } catch (error) {
         const response = bad(error);
         set.status = response.status;

@@ -53,11 +53,25 @@ export type PublicationSimulation = {
   attempted: boolean;
   success: boolean;
   payloadHash: string;
+  simulatedAt: number;
+  evidenceHash: string;
   latencyMs?: number;
   upstreamCode?: string;
   errorCode?: string;
   response?: JsonObject;
 };
+
+export type PublicationTransaction = {
+  chainId: number;
+  from: string;
+  to: string;
+  value: string;
+  data: string;
+};
+
+export function publicationPayloadHash(tx: PublicationTransaction): string {
+  return keccak256(toHex(canonicalJson(tx)));
+}
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -105,6 +119,10 @@ function upstreamCode(body: JsonObject): string | undefined {
 
 function errorCodeFor(status: number, body?: JsonObject): string {
   const code = upstreamCode(body ?? {});
+  if (code === "40101") return ErrorCodes.BINANCE_AUTH_FAILED;
+  if (code === "40102") return ErrorCodes.BINANCE_SIGNATURE_MISMATCH;
+  if (code === "40103") return ErrorCodes.BINANCE_TIMESTAMP_DRIFT;
+  if (code === "42900") return ErrorCodes.BINANCE_RATE_LIMITED;
   if (status === 401) return code === "40102" ? ErrorCodes.BINANCE_SIGNATURE_MISMATCH : ErrorCodes.BINANCE_AUTH_FAILED;
   if (status === 429) return ErrorCodes.BINANCE_RATE_LIMITED;
   if (status >= 500) return ErrorCodes.BINANCE_UPSTREAM_UNAVAILABLE;
@@ -131,6 +149,51 @@ function normalizedRwaSearchItems(body: JsonObject): RwaAsset[] {
       underlyingTicker: asString(asset.underlyingTicker) ?? asString(item.underlyingTicker),
     }));
   });
+}
+
+function canonicalAsset(asset: RwaAsset | undefined): JsonObject | null {
+  if (!asset) return null;
+  return {
+    ticker: asset.ticker ?? null,
+    companyName: asset.companyName ?? null,
+    platformId: asset.platformId ?? null,
+    binanceChainId: asset.binanceChainId ?? null,
+    tokenContractAddress: asset.tokenContractAddress ?? null,
+    tokenSymbol: asset.tokenSymbol ?? null,
+    tokenName: asset.tokenName ?? null,
+    underlyingTicker: asset.underlyingTicker ?? null,
+  };
+}
+
+export function computeRwaContextHash(input: {
+  capturedAt: number;
+  assetQuery: string;
+  selectedAsset?: RwaAsset;
+  tokenPrice?: string;
+  referencePrice?: string;
+  underlying?: JsonObject;
+  market?: JsonObject;
+  calls: BinanceCall[];
+}): string {
+  return keccak256(toHex(canonicalJson({
+    capturedAt: input.capturedAt,
+    assetQuery: input.assetQuery,
+    selectedAsset: canonicalAsset(input.selectedAsset),
+    tokenPrice: input.tokenPrice ?? null,
+    referencePrice: input.referencePrice ?? null,
+    underlying: input.underlying ?? null,
+    market: input.market ?? null,
+    calls: input.calls.map(({ module, operation, endpointId, success, sourceTimestamp, latencyMs, upstreamCode, errorCode }) => ({
+      module,
+      operation,
+      endpointId,
+      success,
+      sourceTimestamp: sourceTimestamp ?? null,
+      latencyMs,
+      upstreamCode: upstreamCode ?? null,
+      errorCode: errorCode ?? null,
+    })),
+  })));
 }
 
 export class BinanceWeb3Client {
@@ -233,10 +296,10 @@ export class BinanceWeb3Client {
     const calls: BinanceCall[] = [];
     if (!this.configured) {
       calls.push(callFailure("RWA_DATA", "context", "RWA_CONTEXT", ErrorCodes.BINANCE_API_NOT_CONFIGURED));
-      const normalized = { assetQuery, selectedAsset: null, calls };
+      const capturedAt = Date.now();
       return {
-        capturedAt: Date.now(),
-        contextHash: keccak256(toHex(canonicalJson(normalized))),
+        capturedAt,
+        contextHash: computeRwaContextHash({ capturedAt, assetQuery, calls }),
         configured: false,
         assetQuery,
         calls,
@@ -302,20 +365,10 @@ export class BinanceWeb3Client {
       if (marketResponse.call.success) market = responseObject(marketResponse.body) ?? market;
     }
 
-    const normalized = {
-      assetQuery,
-      selectedAsset: selectedAsset ?? null,
-      tokenPrice: tokenPrice ?? null,
-      referencePrice: referencePrice ?? null,
-      underlying: underlying ?? null,
-      market: market ?? null,
-      calls: calls.map(({ module, operation, endpointId, success, sourceTimestamp, upstreamCode, errorCode }) => ({
-        module, operation, endpointId, success, sourceTimestamp: sourceTimestamp ?? null, upstreamCode: upstreamCode ?? null, errorCode: errorCode ?? null,
-      })),
-    };
+    const capturedAt = Date.now();
     return {
-      capturedAt: Date.now(),
-      contextHash: keccak256(toHex(canonicalJson(normalized))),
+      capturedAt,
+      contextHash: computeRwaContextHash({ capturedAt, assetQuery, selectedAsset, tokenPrice, referencePrice, underlying, market, calls }),
       configured: true,
       assetQuery,
       selectedAsset,
@@ -337,26 +390,43 @@ export class BinanceWeb3Client {
     return { chains: responseItems(response.body), call: response.call };
   }
 
-  async simulatePublication(tx: { from: string; to: string; value: string; data: string }): Promise<PublicationSimulation> {
-    const payloadHash = keccak256(toHex(canonicalJson(tx)));
+  async simulatePublication(tx: PublicationTransaction): Promise<PublicationSimulation> {
+    const payloadHash = publicationPayloadHash(tx);
+    const simulatedAt = Date.now();
     if (!this.configured) {
-      return { attempted: false, success: false, payloadHash, errorCode: ErrorCodes.BINANCE_API_NOT_CONFIGURED };
+      const evidenceHash = keccak256(toHex(canonicalJson({ attempted: false, payloadHash, errorCode: ErrorCodes.BINANCE_API_NOT_CONFIGURED })));
+      return { attempted: false, success: false, payloadHash, simulatedAt, evidenceHash, errorCode: ErrorCodes.BINANCE_API_NOT_CONFIGURED };
     }
     const response = await this.request({
       module: "TRANSACTION",
       operation: "simulateTransaction",
       path: "/api/v1/dex/pre-transaction/simulate",
       method: "POST",
-      body: { binanceChainId: BSC_CHAIN, evmTx: tx },
+      body: {
+        binanceChainId: String(tx.chainId),
+        evmTx: { from: tx.from, to: tx.to, value: tx.value, data: tx.data },
+      },
     });
     const responseData = responseObject(response.body);
+    const status = asString(responseData?.status)?.toUpperCase();
+    const executionOk = !status || ["SUCCESS", "SUCCEEDED", "PASS", "SIMULATED"].includes(status);
+    const success = response.call.success && executionOk;
+    const errorCode = success ? undefined : response.call.errorCode ?? ErrorCodes.TX_SIMULATION_FAILED;
+    const evidenceHash = keccak256(toHex(canonicalJson({
+      code: response.body.code ?? null,
+      message: response.body.msg ?? null,
+      data: responseData ?? null,
+      errorCode: errorCode ?? null,
+    })));
     return {
       attempted: true,
-      success: response.call.success && (asString(responseData?.status)?.toUpperCase() === "SUCCESS" || response.body.code === 0),
+      success,
       payloadHash,
+      simulatedAt,
+      evidenceHash,
       latencyMs: response.call.latencyMs,
       upstreamCode: response.call.upstreamCode,
-      errorCode: response.call.errorCode,
+      errorCode,
       response: responseData,
     };
   }
