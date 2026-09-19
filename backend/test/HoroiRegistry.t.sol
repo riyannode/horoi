@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-import {HoroiRegistry} from "./HoroiRegistry.sol";
+import {HoroiRegistry} from "../HoroiRegistry.sol";
 
 interface Vm {
     function prank(address) external;
