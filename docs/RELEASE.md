@@ -33,12 +33,10 @@ This archive is a hardened release candidate. Local verification and the pinned 
 
 ## Remaining external release work
 
-The Ankr archive gate and full compatible/incompatible harness paths are verified at the pinned NVDAB state; see [docs/TESTS.md](TESTS.md). These separate external release steps remain:
+The Ankr archive gate and full compatible/incompatible harness paths are verified at the pinned NVDAB state; see [docs/TESTS.md](TESTS.md). Remaining external release work:
 
-1. A real external ERC-4626-like target is not claimed. The included HoroiVault is a transparent production-neutral harness; external protocol conformance remains a separate target-selection task.
-2. If automatic holder discovery is rate-limited in a future run, provide `--holder 0x...` or `HOROI_HOLDER_ADDRESS` for a funded holder at the pinned block.
-3. Deploy `HoroiRegistry` on BSC mainnet with the maintainer wallet and BNB, verify source, then run exact Binance Transaction API simulation and publish one fresh report. This PR intentionally does not do that.
-4. Record <=4 minute demo and complete the portal submission.
+1. Deploy `HoroiRegistry` on BSC mainnet with the maintainer wallet and BNB, verify source, then run exact Binance Transaction API simulation and publish one fresh report. This PR intentionally does not do that.
+2. Record <=4 minute demo and complete the portal submission.
 
 ## Exact verification commands
 
@@ -52,7 +50,33 @@ forge test
 bun run --cwd frontend build
 ```
 
-Then:
+## Pinned-fork smoke reproduction
+
+The transparent `HoroiVault` harness is the reproducible v1 integration target.
+External third-party protocol conformance is an optional validation target, not a
+v1 release blocker. Run the compatible fixture first; its H101-H110 report must pass
+before running the expected-failing incompatible fixture:
+
+```bash
+forge build
+
+BSC_RPC_URL="$BSC_ARCHIVE_RPC_URL" \
+HOROI_SMOKE_FIXTURE=compatible \
+bun run smoke:fork
+
+BSC_RPC_URL="$BSC_ARCHIVE_RPC_URL" \
+HOROI_SMOKE_FIXTURE=incompatible \
+bun run smoke:fork
+```
+
+The runtime evidence and expected fixture outcomes are recorded in
+[docs/TESTS.md](TESTS.md). Supply the archive RPC through the local environment; do not
+store its endpoint or credential in this repository.
+
+## Optional example for future third-party integrations
+
+The following CLI example is optional and illustrates a future external-target
+validation. It is not required for the v1 harness conformance proof:
 
 ```bash
 export BSC_RPC_URL=<reliable BSC mainnet RPC>
