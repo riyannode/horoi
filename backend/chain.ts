@@ -597,6 +597,7 @@ export async function rpcRequest<T>(rpcUrl: string, method: string, params: unkn
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(parseForkRpcTimeoutMs()),
   });
   if (!response.ok) throw new Error(`RPC ${method} HTTP ${response.status}`);
   const payload = (await response.json()) as { result?: T; error?: { message?: string } };

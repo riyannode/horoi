@@ -199,14 +199,14 @@ async function scenarioRun(args: {
   updater: Address;
   label: ScenarioEvidence["label"];
   twoUsers?: boolean;
+  onStage?: (stage: string) => void;
 }): Promise<{
   scenario?: ScenarioEvidence;
   scheduled?: NonNullable<EvaluationInput["scheduled"]>;
   multiUser?: NonNullable<NonNullable<EvaluationInput["scenarios"]>["multiUser"]>;
   error?: string;
 }> {
-  const snapshot = await forkSnapshot(args.rpcUrl);
-  const client = forkPublicClient(args.rpcUrl);
+  let snapshot: string | undefined;
   const ctxA: AdapterContext = {
     asset: args.asset,
     target: args.target,
@@ -218,10 +218,19 @@ async function scenarioRun(args: {
   const ctxB: AdapterContext = { ...ctxA, user: USER_B, rawAmount: args.amount * 2n };
 
   try {
+    args.onStage?.("SNAPSHOT");
+    snapshot = await forkSnapshot(args.rpcUrl);
+    const client = forkPublicClient(args.rpcUrl);
+    args.onStage?.("SETUP");
     await args.adapter.setup(ctxA);
+    args.onStage?.("DEPOSIT_USER_A");
     await args.adapter.deposit(ctxA, args.amount);
-    if (args.twoUsers) await args.adapter.deposit(ctxB, args.amount * 2n);
+    if (args.twoUsers) {
+      args.onStage?.("DEPOSIT_USER_B");
+      await args.adapter.deposit(ctxB, args.amount * 2n);
+    }
 
+    args.onStage?.("POSITION_BEFORE");
     const beforeA = await args.adapter.position(ctxA, USER_A);
     const expectedBeforeA = await args.adapter.expectedClaim(ctxA, USER_A);
     const beforeB = args.twoUsers ? await args.adapter.position(ctxB, USER_B) : undefined;
@@ -229,6 +238,7 @@ async function scenarioRun(args: {
 
     const currentBlock = await client.getBlock({ blockTag: "latest" });
     const effectiveAt = currentBlock.timestamp + 60n;
+    args.onStage?.("SCHEDULE_MULTIPLIER");
     const txHash = await scheduleMultiplierOnFork({
       rpcUrl: args.rpcUrl,
       asset: args.asset,
@@ -237,19 +247,25 @@ async function scenarioRun(args: {
       effectiveAt,
     });
 
+    args.onStage?.("PRE_EFFECTIVE_WARP");
     await forkWarp(args.rpcUrl, effectiveAt - 1n);
+    args.onStage?.("PRE_EFFECTIVE_READ");
     const preActiveMultiplier = await readMultiplier(args.rpcUrl, args.asset);
+    args.onStage?.("POST_EFFECTIVE_WARP");
     await forkWarp(args.rpcUrl, effectiveAt + 1n);
+    args.onStage?.("POST_EFFECTIVE_READ");
     const postActiveMultiplier = await readMultiplier(args.rpcUrl, args.asset);
 
     const afterCtxA = { ...ctxA, uiMultiplier: postActiveMultiplier };
     const afterCtxB = { ...ctxB, uiMultiplier: postActiveMultiplier };
+    args.onStage?.("POSITION_AFTER");
     const afterA = await args.adapter.position(afterCtxA, USER_A);
     const expectedAfterA = await args.adapter.expectedClaim(afterCtxA, USER_A);
     const afterB = args.twoUsers ? await args.adapter.position(afterCtxB, USER_B) : undefined;
 
     let returnedRaw: bigint | undefined;
     if (args.adapter.redeemable && (afterA.shareBalance ?? 0n) > 0n) {
+      args.onStage?.("REDEEM");
       returnedRaw = (await args.adapter.redeem(afterCtxA, afterA.shareBalance as bigint)).returnedRaw;
     }
 
@@ -292,7 +308,10 @@ async function scenarioRun(args: {
       error: String(error),
     };
   } finally {
-    await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+    if (snapshot) {
+      args.onStage?.("REVERT");
+      await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+    }
   }
 }
 
@@ -513,6 +532,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         updater,
         label: "forwardSplit",
         twoUsers: true,
+        onStage: (stage) => diagnostic(`SCENARIO_FORWARD_SPLIT_${stage}`),
       });
       diagnostic(forward.error ? "FORWARD_SPLIT_FAILED" : "FORWARD_SPLIT_COMPLETE", forward.error);
       diagnostic(forward.multiUser ? "MULTI_USER_COMPLETE" : "MULTI_USER_INCOMPLETE", forward.error);
@@ -531,6 +551,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         newMultiplier: token.uiMultiplier / 10n,
         updater,
         label: "reverseSplit",
+        onStage: (stage) => diagnostic(`SCENARIO_REVERSE_SPLIT_${stage}`),
       });
       diagnostic(reverse.error ? "REVERSE_SPLIT_FAILED" : "REVERSE_SPLIT_COMPLETE", reverse.error);
       scenarios.reverseSplit = reverse.scenario;
@@ -546,6 +567,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         newMultiplier: (token.uiMultiplier * 1008n) / 1000n,
         updater,
         label: "dividend",
+        onStage: (stage) => diagnostic(`SCENARIO_DIVIDEND_${stage}`),
       });
       diagnostic(dividend.error ? "DIVIDEND_FAILED" : "DIVIDEND_COMPLETE", dividend.error);
       scenarios.dividend = dividend.scenario;
