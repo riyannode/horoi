@@ -178,7 +178,7 @@ async function runFixture(fixture: Fixture): Promise<{ report: HoroiReport; depl
     process.stdout.write(`${JSON.stringify(redactUrls({
       nvdab: { asset: NVDAB, chainId: 56, pinnedBlock: PINNED_BLOCK.toString() },
       [fixture]: { deployment: run.deployment, report: reportEvidence(report) },
-    }), null, 2)}\n`);
+    }), (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value, 2)}\n`);
     currentStage = "REPORT_VALIDATION";
     verifyReport(run, fixture);
     return run;
