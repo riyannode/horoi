@@ -492,7 +492,7 @@ export async function startAnvilFork(opts: {
   rpcUrl?: string;
   blockNumber?: bigint;
 }): Promise<ForkHandle> {
-  parseForkRpcTimeoutMs();
+  const rpcTimeoutMs = parseForkRpcTimeoutMs();
   const rpcUrl = opts.rpcUrl ?? DEFAULT_RPC;
   const { spawn } = await import("node:child_process");
   const anvilBin = process.env.ANVIL_BIN ?? "anvil";
@@ -502,6 +502,10 @@ export async function startAnvilFork(opts: {
     "127.0.0.1",
     "--port",
     String(port),
+    "--timeout",
+    String(rpcTimeoutMs),
+    "--retries",
+    "0",
     "--fork-url",
     rpcUrl,
     "--silent",

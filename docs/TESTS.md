@@ -82,8 +82,9 @@ BSC_RPC_URL="${BSC_ARCHIVE_RPC_URL:?set BSC_ARCHIVE_RPC_URL}" HOROI_SMOKE_FIXTUR
 `HOROI_HOLDER_ADDRESS` may identify a funded holder at the pinned block to skip log
 discovery. Automatic discovery scans at most 1,000 blocks per log request and stops
 with an error if the provider rejects a request. `HOROI_FORK_RPC_TIMEOUT_MS` controls
-local fork HTTP client timeouts, defaults to `120000`, and accepts positive values up
-to `300000` milliseconds.
+local fork HTTP and Anvil upstream request timeouts, defaults to `120000`, and accepts
+positive values up to `300000` milliseconds. Anvil upstream retries are disabled so a
+stalled archive request cannot hold a fork RPC operation through repeated retries.
 
 The pinned state requires an archive-capable RPC. In the latest rerun,
 `bsc.publicnode.com` required a personal token for historical state and the public
