@@ -15,6 +15,21 @@ import { ErrorCodes, HoroiError } from "./errors";
 
 export const CHAIN_ID = 56;
 export const DEFAULT_RPC = process.env.BSC_RPC_URL ?? "https://bsc-dataseed.bnbchain.org";
+export const DEFAULT_FORK_RPC_TIMEOUT_MS = 120_000;
+export const MAX_FORK_RPC_TIMEOUT_MS = 300_000;
+
+export function parseForkRpcTimeoutMs(value = process.env.HOROI_FORK_RPC_TIMEOUT_MS): number {
+  if (value === undefined) return DEFAULT_FORK_RPC_TIMEOUT_MS;
+  const timeout = Number(value);
+  if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_FORK_RPC_TIMEOUT_MS) {
+    throw new Error(`HOROI_FORK_RPC_TIMEOUT_MS must be finite, positive, and at most ${MAX_FORK_RPC_TIMEOUT_MS}`);
+  }
+  return timeout;
+}
+
+export function forkHttpTransport(rpcUrl: string) {
+  return http(rpcUrl, { timeout: parseForkRpcTimeoutMs() });
+}
 
 export const INTERFACE_IDS = {
   IERC165: "0x01ffc9a7",
@@ -153,6 +168,40 @@ export const bstockAbi = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "DEFAULT_ADMIN_ROLE",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "getRoleMemberCount",
+    stateMutability: "view",
+    inputs: [{ name: "role", type: "bytes32" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getRoleMember",
+    stateMutability: "view",
+    inputs: [
+      { name: "role", type: "bytes32" },
+      { name: "index", type: "uint256" },
+    ],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "hasRole",
+    stateMutability: "view",
+    inputs: [
+      { name: "role", type: "bytes32" },
+      { name: "account", type: "address" },
+    ],
+    outputs: [{ type: "bool" }],
   },
   {
     type: "function",
@@ -443,6 +492,7 @@ export async function startAnvilFork(opts: {
   rpcUrl?: string;
   blockNumber?: bigint;
 }): Promise<ForkHandle> {
+  const rpcTimeoutMs = parseForkRpcTimeoutMs();
   const rpcUrl = opts.rpcUrl ?? DEFAULT_RPC;
   const { spawn } = await import("node:child_process");
   const anvilBin = process.env.ANVIL_BIN ?? "anvil";
@@ -452,6 +502,10 @@ export async function startAnvilFork(opts: {
     "127.0.0.1",
     "--port",
     String(port),
+    "--timeout",
+    String(rpcTimeoutMs),
+    "--retries",
+    "0",
     "--fork-url",
     rpcUrl,
     "--silent",
@@ -490,43 +544,47 @@ export async function startAnvilFork(opts: {
     );
   }
 
-  const forkClient = forkPublicClient(rpc);
-  const chainId = await forkClient.getChainId();
-  if (chainId !== CHAIN_ID) {
-    child.kill("SIGTERM");
-    throw new HoroiError(ErrorCodes.CHAIN_MISMATCH, `fork chainId=${chainId}`);
-  }
-  const block = await forkClient.getBlock({ blockTag: "latest" });
+  try {
+    const forkClient = forkPublicClient(rpc);
+    const chainId = await forkClient.getChainId();
+    if (chainId !== CHAIN_ID) {
+      throw new HoroiError(ErrorCodes.CHAIN_MISMATCH, `fork chainId=${chainId}`);
+    }
+    const block = await forkClient.getBlock({ blockTag: "latest" });
 
-  return {
-    port,
-    pid: child.pid ?? 0,
-    rpcUrl: rpc,
-    blockNumber: block.number,
-    blockTimestamp: block.timestamp,
-    stop: async () => {
-      if (!child.pid) return;
-      try {
-        process.kill(child.pid, "SIGTERM");
-      } catch {
-        // already exited
-      }
-    },
-  };
+    return {
+      port,
+      pid: child.pid ?? 0,
+      rpcUrl: rpc,
+      blockNumber: block.number,
+      blockTimestamp: block.timestamp,
+      stop: async () => {
+        if (!child.pid) return;
+        try {
+          process.kill(child.pid, "SIGTERM");
+        } catch {
+          // already exited
+        }
+      },
+    };
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  }
 }
 
 export function anvilTestClient(rpcUrl: string) {
   return createTestClient({
     chain: { ...bsc, id: CHAIN_ID },
     mode: "anvil",
-    transport: http(rpcUrl),
+    transport: forkHttpTransport(rpcUrl),
   });
 }
 
 export function forkPublicClient(rpcUrl: string): PublicClient {
   return createPublicClient({
     chain: { ...bsc, id: CHAIN_ID },
-    transport: http(rpcUrl),
+    transport: forkHttpTransport(rpcUrl),
   });
 }
 
@@ -534,7 +592,7 @@ export function forkWalletClient(rpcUrl: string, account: Address) {
   return createWalletClient({
     account,
     chain: { ...bsc, id: CHAIN_ID },
-    transport: http(rpcUrl),
+    transport: forkHttpTransport(rpcUrl),
   });
 }
 
@@ -543,6 +601,7 @@ export async function rpcRequest<T>(rpcUrl: string, method: string, params: unkn
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(parseForkRpcTimeoutMs()),
   });
   if (!response.ok) throw new Error(`RPC ${method} HTTP ${response.status}`);
   const payload = (await response.json()) as { result?: T; error?: { message?: string } };
@@ -586,37 +645,33 @@ export async function findFundedHolder(
       functionName: "balanceOf",
       functionArgs: [opts.preferred],
     });
-    if ((balance ?? 0n) >= minBalance) return opts.preferred;
+    return (balance ?? 0n) >= minBalance ? opts.preferred : null;
   }
 
   const latest = await client.getBlockNumber();
   const lookback = opts.lookbackBlocks ?? 250_000n;
   const floor = latest > lookback ? latest - lookback : 0n;
-  const chunk = 10_000n;
+  const chunk = 1_000n;
   let toBlock = latest;
 
   while (toBlock >= floor) {
     const fromBlock = toBlock > chunk ? toBlock - chunk + 1n : 0n;
-    try {
-      const logs = await client.getLogs({
+    const logs = await client.getLogs({
+      address: asset,
+      event: transferEvent,
+      fromBlock: fromBlock < floor ? floor : fromBlock,
+      toBlock,
+    });
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const candidate = logs[i]?.args?.to as Address | undefined;
+      if (!candidate || /^0x0{40}$/i.test(candidate)) continue;
+      const balance = await tryRead<bigint>(client, {
         address: asset,
-        event: transferEvent,
-        fromBlock: fromBlock < floor ? floor : fromBlock,
-        toBlock,
+        abi: bstockAbi,
+        functionName: "balanceOf",
+        functionArgs: [candidate],
       });
-      for (let i = logs.length - 1; i >= 0; i -= 1) {
-        const candidate = logs[i]?.args?.to as Address | undefined;
-        if (!candidate || /^0x0{40}$/i.test(candidate)) continue;
-        const balance = await tryRead<bigint>(client, {
-          address: asset,
-          abi: bstockAbi,
-          functionName: "balanceOf",
-          functionArgs: [candidate],
-        });
-        if ((balance ?? 0n) >= minBalance) return candidate;
-      }
-    } catch {
-      // Public RPCs often cap getLogs ranges. Continue with smaller historical windows.
+      if ((balance ?? 0n) >= minBalance) return candidate;
     }
     if (fromBlock <= floor || fromBlock === 0n) break;
     toBlock = fromBlock - 1n;
@@ -643,7 +698,7 @@ export async function transferFromImpersonated(
       account: from,
       chain: { ...bsc, id: CHAIN_ID },
     });
-    const receipt = await client.waitForTransactionReceipt({ hash });
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
     if (receipt.status !== "success") throw new Error("transfer reverted");
     return hash;
   } finally {
@@ -682,6 +737,32 @@ export async function findMultiplierUpdater(
     functionName: "owner",
   });
   if (owner && !/^0x0{40}$/i.test(owner)) return owner;
+
+  // NVDAB uses an enumerable AccessControl-style admin role rather than owner().
+  // Discover members from the live contract; never assume or fabricate a role holder.
+  const defaultAdminRole = await tryRead<Hex>(client, {
+    address: asset,
+    abi: bstockAbi,
+    functionName: "DEFAULT_ADMIN_ROLE",
+  });
+  if (defaultAdminRole) {
+    const memberCount = await tryRead<bigint>(client, {
+      address: asset,
+      abi: bstockAbi,
+      functionName: "getRoleMemberCount",
+      functionArgs: [defaultAdminRole],
+    });
+    const boundedCount = Number(memberCount ?? 0n);
+    for (let index = 0; index < Math.min(boundedCount, 32); index += 1) {
+      const member = await tryRead<Address>(client, {
+        address: asset,
+        abi: bstockAbi,
+        functionName: "getRoleMember",
+        functionArgs: [defaultAdminRole, BigInt(index)],
+      });
+      if (member && !/^0x0{40}$/i.test(member)) return member;
+    }
+  }
 
   const latest = await client.getBlockNumber();
   const lookback = 500_000n;
@@ -730,7 +811,7 @@ export async function scheduleMultiplierOnFork(args: {
       account: args.updater,
       chain: { ...bsc, id: CHAIN_ID },
     });
-    const receipt = await client.waitForTransactionReceipt({ hash });
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
     if (receipt.status !== "success") throw new Error("setUIMultiplier reverted");
     return hash;
   } finally {

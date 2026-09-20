@@ -106,11 +106,11 @@ These entries are from this release-session runtime, not assumptions:
 
 - Official authentication docs specify HMAC-SHA256 over `timestamp + method + /build request path + raw body`, with `X-OC-APIKEY`, `X-OC-TIMESTAMP`, and `X-OC-SIGN` headers.
 - The implemented client follows that path-prefix/signature rule and uses a 15-second request timeout.
-- No Binance API key/secret was present in the execution environment. The live signed RWA call and Transaction API simulation therefore remain NOT VERIFIED; the product returns `BINANCE_API_NOT_CONFIGURED` rather than fake success.
+- Historical uncredentialed-environment snapshot: no Binance API key/secret was present in that execution environment, so the signed RWA call and Transaction API simulation were then NOT VERIFIED; the product returned `BINANCE_API_NOT_CONFIGURED` rather than fake success. Later authenticated API evidence is recorded in the PR body.
 - No publication transaction exists, so Wallet transaction-detail readback is NOT VERIFIED.
 
 ### BSC read evidence
 
 - Direct BSC RPC inspection of NVDAB at `0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436` returned chain ID `56`, symbol `NVDAB`, name `NVIDIA Corp`, decimals `18`, and all five expected interface flags true.
 - A fresh inspect also returned a live source block, block hash, block timestamp, active multiplier, and no pending transition. Exact values are recorded in the final release report, not committed as stale fixtures.
-- A pinned Anvil fork smoke run executed a real transfer receipt and decoded `TransferWithUIAmount`; H005, H007, and H008 passed. The supplied updater could not schedule a faithful transition, so H006 remained `INCOMPLETE` with `FORK_MUTATION_UNAVAILABLE`. No storage mutation was used.
+- Historical initial pinned Anvil smoke, superseded by the full compatible/incompatible fork evidence in [docs/TESTS.md](TESTS.md): it executed a real transfer receipt and decoded `TransferWithUIAmount`; H005, H007, and H008 passed. The supplied updater could not schedule a faithful transition in that run, so H006 was then `INCOMPLETE` with `FORK_MUTATION_UNAVAILABLE`. No storage mutation was used.

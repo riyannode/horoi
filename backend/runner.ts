@@ -40,8 +40,10 @@ export type RunInput = {
   adapter?: ProtocolAdapter;
   holder?: Address;
   updater?: Address;
+  prepareForkTarget?: (args: { rpcUrl: string; asset: Address; blockNumber: bigint }) => Promise<Address>;
   dryRunTokenOnly?: boolean;
   onProgress?: (completed: number, total: number, stage: string) => void | Promise<void>;
+  onDiagnostic?: (stage: string, error?: unknown) => void;
 };
 
 export type RunResult = {
@@ -167,6 +169,7 @@ async function baselineRun(args: {
     await args.adapter.setup(ctx);
     await args.adapter.deposit(ctx, args.amount);
     const position = await args.adapter.position(ctx, USER_A);
+    const expected = await args.adapter.expectedClaim(ctx, USER_A);
     let returnedRaw: bigint | undefined;
     if (args.adapter.redeemable && (position.shareBalance ?? 0n) > 0n) {
       returnedRaw = (await args.adapter.redeem(ctx, position.shareBalance as bigint)).returnedRaw;
@@ -176,7 +179,7 @@ async function baselineRun(args: {
       rawClaim: position.rawClaim,
       shares: position.shareBalance,
       returnedRaw,
-      expectedRaw: position.rawClaim,
+      expectedRaw: expected.rawClaim,
     };
   } catch (error) {
     return { deposited: false, error: String(error) };
@@ -196,14 +199,14 @@ async function scenarioRun(args: {
   updater: Address;
   label: ScenarioEvidence["label"];
   twoUsers?: boolean;
+  onStage?: (stage: string) => void;
 }): Promise<{
   scenario?: ScenarioEvidence;
   scheduled?: NonNullable<EvaluationInput["scheduled"]>;
   multiUser?: NonNullable<NonNullable<EvaluationInput["scenarios"]>["multiUser"]>;
   error?: string;
 }> {
-  const snapshot = await forkSnapshot(args.rpcUrl);
-  const client = forkPublicClient(args.rpcUrl);
+  let snapshot: string | undefined;
   const ctxA: AdapterContext = {
     asset: args.asset,
     target: args.target,
@@ -215,16 +218,27 @@ async function scenarioRun(args: {
   const ctxB: AdapterContext = { ...ctxA, user: USER_B, rawAmount: args.amount * 2n };
 
   try {
+    args.onStage?.("SNAPSHOT");
+    snapshot = await forkSnapshot(args.rpcUrl);
+    const client = forkPublicClient(args.rpcUrl);
+    args.onStage?.("SETUP");
     await args.adapter.setup(ctxA);
+    args.onStage?.("DEPOSIT_USER_A");
     await args.adapter.deposit(ctxA, args.amount);
-    if (args.twoUsers) await args.adapter.deposit(ctxB, args.amount * 2n);
+    if (args.twoUsers) {
+      args.onStage?.("DEPOSIT_USER_B");
+      await args.adapter.deposit(ctxB, args.amount * 2n);
+    }
 
+    args.onStage?.("POSITION_BEFORE");
     const beforeA = await args.adapter.position(ctxA, USER_A);
+    const expectedBeforeA = await args.adapter.expectedClaim(ctxA, USER_A);
     const beforeB = args.twoUsers ? await args.adapter.position(ctxB, USER_B) : undefined;
     if (beforeA.rawClaim <= 0n) throw new Error("zero raw claim after deposit");
 
     const currentBlock = await client.getBlock({ blockTag: "latest" });
     const effectiveAt = currentBlock.timestamp + 60n;
+    args.onStage?.("SCHEDULE_MULTIPLIER");
     const txHash = await scheduleMultiplierOnFork({
       rpcUrl: args.rpcUrl,
       asset: args.asset,
@@ -233,18 +247,25 @@ async function scenarioRun(args: {
       effectiveAt,
     });
 
+    args.onStage?.("PRE_EFFECTIVE_WARP");
     await forkWarp(args.rpcUrl, effectiveAt - 1n);
+    args.onStage?.("PRE_EFFECTIVE_READ");
     const preActiveMultiplier = await readMultiplier(args.rpcUrl, args.asset);
+    args.onStage?.("POST_EFFECTIVE_WARP");
     await forkWarp(args.rpcUrl, effectiveAt + 1n);
+    args.onStage?.("POST_EFFECTIVE_READ");
     const postActiveMultiplier = await readMultiplier(args.rpcUrl, args.asset);
 
     const afterCtxA = { ...ctxA, uiMultiplier: postActiveMultiplier };
     const afterCtxB = { ...ctxB, uiMultiplier: postActiveMultiplier };
+    args.onStage?.("POSITION_AFTER");
     const afterA = await args.adapter.position(afterCtxA, USER_A);
+    const expectedAfterA = await args.adapter.expectedClaim(afterCtxA, USER_A);
     const afterB = args.twoUsers ? await args.adapter.position(afterCtxB, USER_B) : undefined;
 
     let returnedRaw: bigint | undefined;
     if (args.adapter.redeemable && (afterA.shareBalance ?? 0n) > 0n) {
+      args.onStage?.("REDEEM");
       returnedRaw = (await args.adapter.redeem(afterCtxA, afterA.shareBalance as bigint)).returnedRaw;
     }
 
@@ -252,11 +273,11 @@ async function scenarioRun(args: {
       label: args.label,
       requestedMultiplier: args.newMultiplier,
       activeMultiplier: postActiveMultiplier,
-      rawBefore: beforeA.rawClaim,
+      rawBefore: expectedBeforeA.rawClaim,
       rawAfter: afterA.rawClaim,
-      effectiveBefore: effectiveAmount(beforeA.rawClaim, args.oldMultiplier),
-      effectiveAfter: effectiveAmount(afterA.rawClaim, postActiveMultiplier),
-      expectedEffectiveAfter: effectiveAmount(beforeA.rawClaim, args.newMultiplier),
+      effectiveBefore: beforeA.effectiveClaim,
+      effectiveAfter: afterA.effectiveClaim,
+      expectedEffectiveAfter: expectedAfterA.effectiveClaim,
       returnedRaw,
       sharesBefore: beforeA.shareBalance,
       txHash,
@@ -287,7 +308,10 @@ async function scenarioRun(args: {
       error: String(error),
     };
   } finally {
-    await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+    if (snapshot) {
+      args.onStage?.("REVERT");
+      await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+    }
   }
 }
 
@@ -298,6 +322,7 @@ async function fractionalRun(args: {
   adapter: ProtocolAdapter;
   baseAmount: bigint;
   multiplier: bigint;
+  onStage?: (stage: string) => void;
 }): Promise<NonNullable<NonNullable<EvaluationInput["scenarios"]>["fractional"]>> {
   const candidates = [
     args.baseAmount / 10_000n,
@@ -309,7 +334,7 @@ async function fractionalRun(args: {
 
   let lastError = "no fractional candidate executed";
   for (const amount of candidates) {
-    const snapshot = await forkSnapshot(args.rpcUrl);
+    let snapshot: string | undefined;
     const ctx: AdapterContext = {
       asset: args.asset,
       target: args.target,
@@ -319,11 +344,16 @@ async function fractionalRun(args: {
       uiMultiplier: args.multiplier,
     };
     try {
+      args.onStage?.("SNAPSHOT");
+      snapshot = await forkSnapshot(args.rpcUrl);
       await args.adapter.setup(ctx);
+      args.onStage?.("DEPOSIT");
       await args.adapter.deposit(ctx, amount);
+      args.onStage?.("POSITION");
       const position = await args.adapter.position(ctx, USER_A);
       let returnedRaw: bigint | undefined;
       if (args.adapter.redeemable && (position.shareBalance ?? 0n) > 0n) {
+        args.onStage?.("REDEEM");
         returnedRaw = (await args.adapter.redeem(ctx, position.shareBalance as bigint)).returnedRaw;
       }
       return {
@@ -334,8 +364,14 @@ async function fractionalRun(args: {
       };
     } catch (error) {
       lastError = String(error);
+      if (error instanceof Error && /timeout|timed out|aborted/i.test(`${error.name} ${error.message}`)) {
+        return { attemptedRaw: amount, deposited: false, error: lastError };
+      }
     } finally {
-      await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+      if (snapshot) {
+        args.onStage?.("REVERT");
+        await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+      }
     }
   }
   return { attemptedRaw: candidates[0] ?? 1n, deposited: false, error: lastError };
@@ -347,13 +383,16 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
   let completed = 0;
   const startedAt = Date.now();
   let fork: Awaited<ReturnType<typeof startAnvilFork>> | null = null;
+  let target = input.target;
 
   const progress = async (stage: string) => {
     completed = Math.min(total, completed + 1);
     await input.onProgress?.(completed, total, stage);
   };
+  const diagnostic = (stage: string, error?: unknown) => input.onDiagnostic?.(stage, error);
 
   try {
+    diagnostic("ARCHIVE_INSPECTION");
     const token = await inspectToken(input.asset, {
       rpcUrl,
       blockNumber: input.blockNumber ?? undefined,
@@ -371,22 +410,34 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     };
 
     if (!input.dryRunTokenOnly) {
+      diagnostic("FORK_START");
       try {
         fork = await startAnvilFork({ rpcUrl, blockNumber: token.blockNumber });
         base.forkAvailable = true;
         base.forkTimestamp = fork.blockTimestamp;
-      } catch {
+        diagnostic("FORK_STARTED");
+      } catch (error) {
         fork = null;
+        diagnostic("FORK_START_FAILED", error);
       }
+    }
+    if (fork && input.prepareForkTarget) {
+      diagnostic("TARGET_DEPLOYMENT");
+      target = await input.prepareForkTarget({
+        rpcUrl: fork.rpcUrl,
+        asset: input.asset,
+        blockNumber: fork.blockNumber,
+      });
+      diagnostic("TARGET_DEPLOYED");
     }
     await progress("fork");
 
     let adapter: ProtocolAdapter | null = null;
-    if (input.target && input.profile !== "custody") {
+    if (target && input.profile !== "custody") {
       adapter = input.adapter ?? builtinAdapter(input.profile);
       base.adapterAvailable = true;
       base.adapterRedeemable = adapter.redeemable;
-    } else if (input.target && input.profile === "custody") {
+    } else if (target && input.profile === "custody") {
       // Generic custody has no standardized redemption ABI. Keep token-level checks
       // available but do not allow a full conformance PASS from a synthetic redeem.
       adapter = builtinAdapter("custody");
@@ -404,11 +455,14 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       const preferredHolder = input.holder ?? (
         process.env.HOROI_HOLDER_ADDRESS as Address | undefined
       );
+      diagnostic(preferredHolder ? "HOLDER_VERIFICATION" : "HOLDER_DISCOVERY");
       holder = await findFundedHolder(forkClient, input.asset, 1n, { preferred: preferredHolder });
+      diagnostic(holder ? "HOLDER_VERIFIED" : "HOLDER_NOT_FOUND");
       if (holder) {
         const holderBalance = await readBalance(fork.rpcUrl, input.asset, holder);
         baseAmount = chooseBaseAmount(token.decimals, holderBalance);
         if (baseAmount * 8n <= holderBalance) {
+          diagnostic("HOLDER_FUNDING");
           const fundAHash = await transferFromImpersonated(
             fork.rpcUrl,
             input.asset,
@@ -441,19 +495,28 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         }
       }
       const configuredUpdater = input.updater ?? (process.env.HOROI_MULTIPLIER_UPDATER as Address | undefined);
-      updater = configuredUpdater ?? await findMultiplierUpdater(forkClient, input.asset);
+      if (configuredUpdater) {
+        updater = configuredUpdater;
+        diagnostic("UPDATER_CONFIGURED");
+      } else {
+        diagnostic("UPDATER_DISCOVERY");
+        updater = await findMultiplierUpdater(forkClient, input.asset);
+        diagnostic(updater ? "UPDATER_DISCOVERED" : "UPDATER_NOT_FOUND");
+      }
     }
     await progress("funding-and-probes");
 
-    if (fork && adapter && input.target && base.adapterAvailable && holder && baseAmount > 0n) {
+    if (fork && adapter && target && base.adapterAvailable && holder && baseAmount > 0n) {
+      diagnostic("BASELINE");
       base.baseline = await baselineRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         multiplier: token.uiMultiplier,
       });
+      diagnostic(base.baseline.deposited ? "BASELINE_COMPLETE" : "BASELINE_FAILED", base.baseline.error);
 
       if (base.baseline.rawClaim !== undefined) {
         const before: EconomicSnapshot = {
@@ -467,12 +530,13 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     }
     await progress("baseline");
 
-    if (fork && adapter && input.target && base.adapterAvailable && holder && baseAmount > 0n && updater) {
+    if (fork && adapter && target && base.adapterAvailable && holder && baseAmount > 0n && updater) {
       const scenarios: NonNullable<EvaluationInput["scenarios"]> = {};
+      diagnostic("FORWARD_SPLIT");
       const forward = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         oldMultiplier: token.uiMultiplier,
@@ -480,45 +544,57 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         updater,
         label: "forwardSplit",
         twoUsers: true,
+        onStage: (stage) => diagnostic(`SCENARIO_FORWARD_SPLIT_${stage}`),
       });
+      diagnostic(forward.error ? "FORWARD_SPLIT_FAILED" : "FORWARD_SPLIT_COMPLETE", forward.error);
+      diagnostic(forward.multiUser ? "MULTI_USER_COMPLETE" : "MULTI_USER_INCOMPLETE", forward.error);
       scenarios.forwardSplit = forward.scenario;
       scenarios.multiUser = forward.multiUser;
       base.scheduled = forward.scheduled;
 
+      diagnostic("REVERSE_SPLIT");
       const reverse = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         oldMultiplier: token.uiMultiplier,
         newMultiplier: token.uiMultiplier / 10n,
         updater,
         label: "reverseSplit",
+        onStage: (stage) => diagnostic(`SCENARIO_REVERSE_SPLIT_${stage}`),
       });
+      diagnostic(reverse.error ? "REVERSE_SPLIT_FAILED" : "REVERSE_SPLIT_COMPLETE", reverse.error);
       scenarios.reverseSplit = reverse.scenario;
 
+      diagnostic("DIVIDEND");
       const dividend = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         amount: baseAmount,
         oldMultiplier: token.uiMultiplier,
         newMultiplier: (token.uiMultiplier * 1008n) / 1000n,
         updater,
         label: "dividend",
+        onStage: (stage) => diagnostic(`SCENARIO_DIVIDEND_${stage}`),
       });
+      diagnostic(dividend.error ? "DIVIDEND_FAILED" : "DIVIDEND_COMPLETE", dividend.error);
       scenarios.dividend = dividend.scenario;
 
+      diagnostic("FRACTIONAL");
       scenarios.fractional = await fractionalRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
-        target: input.target,
+        target,
         adapter,
         baseAmount,
         multiplier: token.uiMultiplier,
+        onStage: (stage) => diagnostic(`SCENARIO_FRACTIONAL_${stage}`),
       });
+      diagnostic(scenarios.fractional.deposited ? "FRACTIONAL_COMPLETE" : "FRACTIONAL_FAILED", scenarios.fractional.error);
       base.scenarios = scenarios;
 
       if (forward.scenario && economics?.before) {
@@ -543,6 +619,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     ];
     await progress("evaluate");
 
+    diagnostic("REPORT_BUILD");
     const report = buildReport({
       runId: input.runId,
       chainId: token.chainId,
@@ -550,7 +627,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       blockHash: token.blockHash,
       testedAt: startedAt,
       asset: getAddress(input.asset),
-      target: input.target ? getAddress(input.target) : ZERO,
+      target: target ? getAddress(target) : ZERO,
       profile: input.profile,
       token: {
         decimals: token.decimals,
@@ -564,6 +641,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       checks,
       economics,
     });
+    diagnostic("REPORT_BUILT");
     await progress("report");
     completed = total;
     await input.onProgress?.(completed, total, "complete");
@@ -577,7 +655,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         blockHash: "0x",
         testedAt: startedAt,
         asset: input.asset,
-        target: input.target ?? ZERO,
+        target: target ?? ZERO,
         profile: input.profile,
         token: {
           decimals: 18,
@@ -592,6 +670,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
           errorCode: error.code,
         })],
       });
+      diagnostic("ERROR_REPORT_BUILT", error);
       return {
         report: { ...report, status: "ERROR" },
         progress: { completed, total },

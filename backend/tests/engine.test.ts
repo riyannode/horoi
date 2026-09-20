@@ -75,7 +75,7 @@ describe("report hashing", () => {
   test("suite hash is versioned", () => {
     expect(SUITE_HASH.startsWith("0x")).toBe(true);
     expect(SUITE_ID).toBe("HOROI-BSTOCK-1");
-    expect(SUITE_VERSION).toBe("1.1.0");
+    expect(SUITE_VERSION).toBe("1.2.0");
   });
 
   test("check order does not change result hash", () => {
@@ -116,6 +116,34 @@ describe("report hashing", () => {
     const { resultHash: _, ...draft } = report;
     const reordered = { ...draft, checks: [...draft.checks].reverse() };
     expect(computeResultHash(draft)).toBe(computeResultHash(reordered));
+  });
+
+  test("runtime duration and testedAt do not change result hash", () => {
+    const first = buildReport({
+      ...base,
+      testedAt: 1,
+      checks: [check("H001", "PASS", { durationMs: 1, observed: "same" })],
+    });
+    const second = buildReport({
+      ...base,
+      testedAt: 2,
+      checks: [check("H001", "PASS", { durationMs: 9_999, observed: "same" })],
+    });
+    expect(first.resultHash).toBe(second.resultHash);
+  });
+
+  test("block, target, and profile changes change result hash", () => {
+    const checks = [check("H001", "PASS", { observed: "same" })];
+    const first = buildReport({ ...base, checks });
+    expect(buildReport({ ...base, blockNumber: 101, checks }).resultHash).not.toBe(first.resultHash);
+    expect(buildReport({ ...base, target: "0x00000000000000000000000000000000000000b2", checks }).resultHash).not.toBe(first.resultHash);
+    expect(buildReport({ ...base, profile: "custody", checks }).resultHash).not.toBe(first.resultHash);
+  });
+
+  test("material deterministic evidence changes result hash", () => {
+    const first = buildReport({ ...base, checks: [check("H001", "PASS", { observed: "raw:100" })] });
+    const second = buildReport({ ...base, checks: [check("H001", "PASS", { observed: "raw:101" })] });
+    expect(first.resultHash).not.toBe(second.resultHash);
   });
 });
 

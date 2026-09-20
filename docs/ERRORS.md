@@ -41,9 +41,11 @@ Stable public codes used by API/CLI/reports.
 | BINANCE_RATE_LIMITED | 429 | Binance endpoint rate limit | bounded backoff |
 | BINANCE_UPSTREAM_UNAVAILABLE | 502 | Binance service/network unavailable | record evidence; retry idempotent reads only |
 | BINANCE_RESPONSE_INVALID | 502 | malformed or failed upstream response | inspect upstream code/message |
+| PUBLISHER_NOT_CONFIGURED | 424 | no publisher/from address for simulation | provide `--from` or `HOROI_PUBLISHER_ADDRESS` |
 | RWA_ASSET_NOT_FOUND | 424 | no selected RWA asset match | verify ticker/address |
 | RWA_PLATFORM_UNSUPPORTED | 424 | selected platform not supported | choose a supported bStock |
 | TX_SIMULATION_FAILED | 424 | publication simulation failed | inspect exact payload/upstream evidence |
+| TX_PAYLOAD_CHANGED_AFTER_SIMULATION | 409 | stored simulation does not match current payload | rebuild and simulate the exact current payload |
 | WALLET_READBACK_FAILED | 424 | transaction readback unavailable | compare with direct chain state |
 | PUBLICATION_MISMATCH | 409 | sponsor readback disagrees with chain proof | keep publication unverified |
 | REGISTRY_NOT_CONFIGURED | 500 | no REGISTRY_ADDRESS | deploy/configure |

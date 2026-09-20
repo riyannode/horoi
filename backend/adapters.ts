@@ -1,12 +1,12 @@
 import {
   createPublicClient,
   createWalletClient,
-  http,
   type Address,
   type PublicClient,
+  type Abi,
 } from "viem";
 import { bsc } from "viem/chains";
-import { bstockAbi, erc4626Abi, impersonate, stopImpersonating } from "./chain";
+import { bstockAbi, erc4626Abi, forkHttpTransport, impersonate, parseForkRpcTimeoutMs, stopImpersonating } from "./chain";
 import { ErrorCodes, HoroiError } from "./errors";
 
 export type AdapterKind = "custody" | "erc4626" | "custom";
@@ -34,6 +34,7 @@ export type ProtocolAdapter = {
   setup(ctx: AdapterContext): Promise<void>;
   deposit(ctx: AdapterContext, amount: bigint): Promise<void>;
   position(ctx: AdapterContext, user: Address): Promise<PositionSnapshot>;
+  expectedClaim(ctx: AdapterContext, user: Address): Promise<PositionSnapshot>;
   redeem(ctx: AdapterContext, amountOrShares: bigint): Promise<{ returnedRaw: bigint }>;
 };
 
@@ -43,13 +44,13 @@ export function effectiveOf(raw: bigint, multiplier: bigint): bigint {
 
 function clients(rpcUrl: string) {
   const chain = { ...bsc, id: 56 };
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as PublicClient;
+  const publicClient = createPublicClient({ chain, transport: forkHttpTransport(rpcUrl) }) as PublicClient;
   return { chain, publicClient };
 }
 
 function walletFor(rpcUrl: string, user: Address) {
   const chain = { ...bsc, id: 56 };
-  return createWalletClient({ account: user, chain, transport: http(rpcUrl) });
+  return createWalletClient({ account: user, chain, transport: forkHttpTransport(rpcUrl) });
 }
 
 async function asUser<T>(ctx: AdapterContext, fn: () => Promise<T>): Promise<T> {
@@ -81,7 +82,7 @@ export const custodyAdapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new Error("transfer reverted");
       } catch (err) {
         throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, String(err));
@@ -102,6 +103,9 @@ export const custodyAdapter: ProtocolAdapter = {
       effectiveClaim: effectiveOf(raw, ctx.uiMultiplier),
       notes: "Generic custody profile tracks target-held raw balance; withdrawal is not standardized.",
     };
+  },
+  async expectedClaim(ctx, user) {
+    return custodyAdapter.position(ctx, user);
   },
   async redeem() {
     throw new HoroiError(
@@ -146,7 +150,7 @@ export const erc4626Adapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: parseForkRpcTimeoutMs() });
         if (approveReceipt.status !== "success") throw new Error("approve reverted");
 
         const hash = await wallet.writeContract({
@@ -157,7 +161,7 @@ export const erc4626Adapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new Error("deposit reverted");
       } catch (err) {
         throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, String(err));
@@ -199,6 +203,9 @@ export const erc4626Adapter: ProtocolAdapter = {
       effectiveClaim: effectiveOf(preview, ctx.uiMultiplier),
     };
   },
+  async expectedClaim(ctx, user) {
+    return erc4626Adapter.position(ctx, user);
+  },
   async redeem(ctx, shares) {
     return asUser(ctx, async () => {
       const { publicClient, chain } = clients(ctx.forkRpc);
@@ -218,7 +225,7 @@ export const erc4626Adapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new Error("redeem reverted");
       } catch (err) {
         throw new HoroiError(ErrorCodes.REDEEM_FAILED, String(err));
@@ -234,8 +241,135 @@ export const erc4626Adapter: ProtocolAdapter = {
   },
 };
 
+const naiveEffectiveClaimAbi = [{
+  type: "function",
+  name: "effectiveClaimOf",
+  stateMutability: "view",
+  inputs: [{ name: "owner", type: "address" }],
+  outputs: [{ type: "uint256" }],
+}] as const satisfies Abi;
+
+function vaultAdapter(naive: boolean): ProtocolAdapter {
+  const adapter: ProtocolAdapter = {
+    kind: "custom",
+    redeemable: true,
+    async setup(ctx) {
+      const { publicClient } = clients(ctx.forkRpc);
+      try {
+        const asset = (await publicClient.readContract({
+          address: ctx.target,
+          abi: erc4626Abi,
+          functionName: "asset",
+        })) as Address;
+        if (asset.toLowerCase() !== ctx.asset.toLowerCase()) {
+          throw new HoroiError(ErrorCodes.TARGET_UNSUPPORTED, `vault asset ${asset} != tested bStock ${ctx.asset}`);
+        }
+      } catch (err) {
+        if (err instanceof HoroiError) throw err;
+        throw new HoroiError(ErrorCodes.TARGET_UNSUPPORTED, String(err));
+      }
+    },
+    async deposit(ctx, amount) {
+      await asUser(ctx, async () => {
+        const { publicClient, chain } = clients(ctx.forkRpc);
+        const wallet = walletFor(ctx.forkRpc, ctx.user);
+        const approveHash = await wallet.writeContract({
+          address: ctx.asset,
+          abi: bstockAbi,
+          functionName: "approve",
+          args: [ctx.target, amount],
+          account: ctx.user,
+          chain,
+        });
+        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: parseForkRpcTimeoutMs() });
+        if (approveReceipt.status !== "success") throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, "approve reverted");
+        const hash = await wallet.writeContract({
+          address: ctx.target,
+          abi: erc4626Abi,
+          functionName: "deposit",
+          args: [amount, ctx.user],
+          account: ctx.user,
+          chain,
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
+        if (receipt.status !== "success") throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, "deposit reverted");
+      });
+    },
+    async position(ctx, user) {
+      const { publicClient } = clients(ctx.forkRpc);
+      const shares = ((await publicClient.readContract({
+        address: ctx.target,
+        abi: erc4626Abi,
+        functionName: "balanceOf",
+        args: [user],
+      })) ?? 0n) as bigint;
+      const rawClaim = ((await publicClient.readContract({
+        address: ctx.target,
+        abi: erc4626Abi,
+        functionName: "previewRedeem",
+        args: [shares],
+      })) ?? 0n) as bigint;
+      const targetAssetBalance = ((await publicClient.readContract({
+        address: ctx.asset,
+        abi: bstockAbi,
+        functionName: "balanceOf",
+        args: [ctx.target],
+      })) ?? 0n) as bigint;
+      const effectiveClaim = naive
+        ? ((await publicClient.readContract({
+            address: ctx.target,
+            abi: naiveEffectiveClaimAbi,
+            functionName: "effectiveClaimOf",
+            args: [user],
+          })) ?? 0n) as bigint
+        : effectiveOf(rawClaim, ctx.uiMultiplier);
+      return { rawClaim, shareBalance: shares, targetAssetBalance, effectiveClaim };
+    },
+    async expectedClaim(ctx, user) {
+      const observed = await adapter.position(ctx, user);
+      return { ...observed, effectiveClaim: effectiveOf(observed.rawClaim, ctx.uiMultiplier) };
+    },
+    async redeem(ctx, shares) {
+      return asUser(ctx, async () => {
+        const { publicClient, chain } = clients(ctx.forkRpc);
+        const before = ((await publicClient.readContract({
+          address: ctx.asset,
+          abi: bstockAbi,
+          functionName: "balanceOf",
+          args: [ctx.user],
+        })) ?? 0n) as bigint;
+        const wallet = walletFor(ctx.forkRpc, ctx.user);
+        const hash = await wallet.writeContract({
+          address: ctx.target,
+          abi: erc4626Abi,
+          functionName: "redeem",
+          args: [shares, ctx.user, ctx.user],
+          account: ctx.user,
+          chain,
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
+        if (receipt.status !== "success") throw new HoroiError(ErrorCodes.REDEEM_FAILED, "redeem reverted");
+        const after = ((await publicClient.readContract({
+          address: ctx.asset,
+          abi: bstockAbi,
+          functionName: "balanceOf",
+          args: [ctx.user],
+        })) ?? 0n) as bigint;
+        return { returnedRaw: after - before };
+      });
+    },
+  };
+  return adapter;
+}
+
+/** Transparent production-neutral test harness adapter. */
+export const horoiVaultAdapter = vaultAdapter(false);
+
+/** TEST/INCOMPATIBLE only: detects a stale effective-unit snapshot. */
+export const incompatibleHoroiVaultAdapter = vaultAdapter(true);
+
 export function validateAdapter(adapter: ProtocolAdapter): void {
-  for (const key of ["setup", "deposit", "position", "redeem"] as const) {
+  for (const key of ["setup", "deposit", "position", "expectedClaim", "redeem"] as const) {
     if (typeof adapter[key] !== "function") {
       throw new HoroiError(ErrorCodes.ADAPTER_INVALID, `missing ${key}`);
     }

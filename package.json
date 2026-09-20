@@ -13,6 +13,7 @@
     "api": "bun backend/api.ts",
     "web": "bun run --cwd frontend dev",
     "cli": "bun backend/cli.ts",
+    "smoke:fork": "bun backend/scripts/fork-harness-smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit",
     "test": "bun test backend/tests",
     "build": "bun build backend/cli.ts --compile --outfile dist/horoi && bun run --cwd frontend build",

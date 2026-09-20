@@ -31,9 +31,17 @@ export type PublicationRow = {
 
 export type SimulationRow = {
   report_id: string;
+  run_id: string;
   payload_hash: string;
   payload_json: string;
   result_json: string;
+  attempted: number;
+  success: number;
+  upstream_code: string | null;
+  latency_ms: number | null;
+  evidence_hash: string | null;
+  error_code: string | null;
+  simulated_at: number;
   captured_at: number;
 };
 
@@ -69,15 +77,39 @@ export function openDb(path = process.env.DATABASE_PATH ?? "./horoi.db"): Databa
     );
     CREATE TABLE IF NOT EXISTS publication_simulations (
       report_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL DEFAULT '',
       payload_hash TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       result_json TEXT NOT NULL,
+      attempted INTEGER NOT NULL DEFAULT 0,
+      success INTEGER NOT NULL DEFAULT 0,
+      upstream_code TEXT,
+      latency_ms INTEGER,
+      evidence_hash TEXT,
+      error_code TEXT,
+      simulated_at INTEGER NOT NULL DEFAULT 0,
       captured_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS runs_asset_target_started ON runs(asset, target, started_at);
     CREATE INDEX IF NOT EXISTS runs_status_started ON runs(status, started_at);
     CREATE INDEX IF NOT EXISTS publications_run ON publications(run_id);
   `);
+  for (const column of [
+    "run_id TEXT NOT NULL DEFAULT ''",
+    "attempted INTEGER NOT NULL DEFAULT 0",
+    "success INTEGER NOT NULL DEFAULT 0",
+    "upstream_code TEXT",
+    "latency_ms INTEGER",
+    "evidence_hash TEXT",
+    "error_code TEXT",
+    "simulated_at INTEGER NOT NULL DEFAULT 0",
+  ]) {
+    try {
+      db.exec(`ALTER TABLE publication_simulations ADD COLUMN ${column}`);
+    } catch {
+      // Column already exists on current databases.
+    }
+  }
   return db;
 }
 
@@ -175,18 +207,34 @@ export function getPublication(db: Database, reportId: string): PublicationRow |
 
 export function upsertSimulation(db: Database, row: SimulationRow): void {
   db.query(
-    `INSERT INTO publication_simulations (report_id, payload_hash, payload_json, result_json, captured_at)
-     VALUES ($report_id, $payload_hash, $payload_json, $result_json, $captured_at)
+    `INSERT INTO publication_simulations (report_id, run_id, payload_hash, payload_json, result_json, attempted, success, upstream_code, latency_ms, evidence_hash, error_code, simulated_at, captured_at)
+     VALUES ($report_id, $run_id, $payload_hash, $payload_json, $result_json, $attempted, $success, $upstream_code, $latency_ms, $evidence_hash, $error_code, $simulated_at, $captured_at)
      ON CONFLICT(report_id) DO UPDATE SET
+       run_id = excluded.run_id,
        payload_hash = excluded.payload_hash,
        payload_json = excluded.payload_json,
        result_json = excluded.result_json,
+       attempted = excluded.attempted,
+       success = excluded.success,
+       upstream_code = excluded.upstream_code,
+       latency_ms = excluded.latency_ms,
+       evidence_hash = excluded.evidence_hash,
+       error_code = excluded.error_code,
+       simulated_at = excluded.simulated_at,
        captured_at = excluded.captured_at`,
   ).run({
     $report_id: row.report_id,
+    $run_id: row.run_id,
     $payload_hash: row.payload_hash,
     $payload_json: row.payload_json,
     $result_json: row.result_json,
+    $attempted: row.attempted,
+    $success: row.success,
+    $upstream_code: row.upstream_code,
+    $latency_ms: row.latency_ms,
+    $evidence_hash: row.evidence_hash,
+    $error_code: row.error_code,
+    $simulated_at: row.simulated_at,
     $captured_at: row.captured_at,
   });
 }
