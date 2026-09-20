@@ -698,7 +698,7 @@ export async function transferFromImpersonated(
       account: from,
       chain: { ...bsc, id: CHAIN_ID },
     });
-    const receipt = await client.waitForTransactionReceipt({ hash });
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
     if (receipt.status !== "success") throw new Error("transfer reverted");
     return hash;
   } finally {
@@ -811,7 +811,7 @@ export async function scheduleMultiplierOnFork(args: {
       account: args.updater,
       chain: { ...bsc, id: CHAIN_ID },
     });
-    const receipt = await client.waitForTransactionReceipt({ hash });
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
     if (receipt.status !== "success") throw new Error("setUIMultiplier reverted");
     return hash;
   } finally {

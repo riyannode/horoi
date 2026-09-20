@@ -6,7 +6,7 @@ import {
   type Abi,
 } from "viem";
 import { bsc } from "viem/chains";
-import { bstockAbi, erc4626Abi, forkHttpTransport, impersonate, stopImpersonating } from "./chain";
+import { bstockAbi, erc4626Abi, forkHttpTransport, impersonate, parseForkRpcTimeoutMs, stopImpersonating } from "./chain";
 import { ErrorCodes, HoroiError } from "./errors";
 
 export type AdapterKind = "custody" | "erc4626" | "custom";
@@ -82,7 +82,7 @@ export const custodyAdapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new Error("transfer reverted");
       } catch (err) {
         throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, String(err));
@@ -150,7 +150,7 @@ export const erc4626Adapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: parseForkRpcTimeoutMs() });
         if (approveReceipt.status !== "success") throw new Error("approve reverted");
 
         const hash = await wallet.writeContract({
@@ -161,7 +161,7 @@ export const erc4626Adapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new Error("deposit reverted");
       } catch (err) {
         throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, String(err));
@@ -225,7 +225,7 @@ export const erc4626Adapter: ProtocolAdapter = {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new Error("redeem reverted");
       } catch (err) {
         throw new HoroiError(ErrorCodes.REDEEM_FAILED, String(err));
@@ -281,7 +281,7 @@ function vaultAdapter(naive: boolean): ProtocolAdapter {
           account: ctx.user,
           chain,
         });
-        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: parseForkRpcTimeoutMs() });
         if (approveReceipt.status !== "success") throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, "approve reverted");
         const hash = await wallet.writeContract({
           address: ctx.target,
@@ -291,7 +291,7 @@ function vaultAdapter(naive: boolean): ProtocolAdapter {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new HoroiError(ErrorCodes.DEPOSIT_FAILED, "deposit reverted");
       });
     },
@@ -347,7 +347,7 @@ function vaultAdapter(naive: boolean): ProtocolAdapter {
           account: ctx.user,
           chain,
         });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
         if (receipt.status !== "success") throw new HoroiError(ErrorCodes.REDEEM_FAILED, "redeem reverted");
         const after = ((await publicClient.readContract({
           address: ctx.asset,

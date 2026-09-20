@@ -11,6 +11,7 @@ import {
   forkPublicClient,
   forkWalletClient,
   impersonate,
+  parseForkRpcTimeoutMs,
   stopImpersonating,
 } from "../chain";
 import {
@@ -68,7 +69,7 @@ async function deployTarget(rpcUrl: string, asset: Address, fixture: Fixture): P
       data,
       gas: 5_000_000n,
     });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: parseForkRpcTimeoutMs() });
     if (receipt.status !== "success" || !receipt.contractAddress) {
       throw new Error(`${fixture} deployment did not succeed on the pinned fork`);
     }
