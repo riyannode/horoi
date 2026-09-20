@@ -322,6 +322,7 @@ async function fractionalRun(args: {
   adapter: ProtocolAdapter;
   baseAmount: bigint;
   multiplier: bigint;
+  onStage?: (stage: string) => void;
 }): Promise<NonNullable<NonNullable<EvaluationInput["scenarios"]>["fractional"]>> {
   const candidates = [
     args.baseAmount / 10_000n,
@@ -333,7 +334,7 @@ async function fractionalRun(args: {
 
   let lastError = "no fractional candidate executed";
   for (const amount of candidates) {
-    const snapshot = await forkSnapshot(args.rpcUrl);
+    let snapshot: string | undefined;
     const ctx: AdapterContext = {
       asset: args.asset,
       target: args.target,
@@ -343,11 +344,16 @@ async function fractionalRun(args: {
       uiMultiplier: args.multiplier,
     };
     try {
+      args.onStage?.("SNAPSHOT");
+      snapshot = await forkSnapshot(args.rpcUrl);
       await args.adapter.setup(ctx);
+      args.onStage?.("DEPOSIT");
       await args.adapter.deposit(ctx, amount);
+      args.onStage?.("POSITION");
       const position = await args.adapter.position(ctx, USER_A);
       let returnedRaw: bigint | undefined;
       if (args.adapter.redeemable && (position.shareBalance ?? 0n) > 0n) {
+        args.onStage?.("REDEEM");
         returnedRaw = (await args.adapter.redeem(ctx, position.shareBalance as bigint)).returnedRaw;
       }
       return {
@@ -358,8 +364,14 @@ async function fractionalRun(args: {
       };
     } catch (error) {
       lastError = String(error);
+      if (error instanceof Error && /timeout|timed out|aborted/i.test(`${error.name} ${error.message}`)) {
+        return { attemptedRaw: amount, deposited: false, error: lastError };
+      }
     } finally {
-      await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+      if (snapshot) {
+        args.onStage?.("REVERT");
+        await forkRevert(args.rpcUrl, snapshot).catch(() => undefined);
+      }
     }
   }
   return { attemptedRaw: candidates[0] ?? 1n, deposited: false, error: lastError };
@@ -580,6 +592,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         adapter,
         baseAmount,
         multiplier: token.uiMultiplier,
+        onStage: (stage) => diagnostic(`SCENARIO_FRACTIONAL_${stage}`),
       });
       diagnostic(scenarios.fractional.deposited ? "FRACTIONAL_COMPLETE" : "FRACTIONAL_FAILED", scenarios.fractional.error);
       base.scenarios = scenarios;
