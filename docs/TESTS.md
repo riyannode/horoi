@@ -86,12 +86,9 @@ local fork HTTP and Anvil upstream request timeouts, defaults to `120000`, and a
 positive values up to `300000` milliseconds. Anvil upstream retries are disabled so a
 stalled archive request cannot hold a fork RPC operation through repeated retries.
 
-The pinned state requires an archive-capable RPC. In the latest rerun,
-`bsc.publicnode.com` required a personal token for historical state and the public
-`bsc-dataseed.bnbchain.org` endpoint returned `missing trie node` at block `122846004`.
-Those attempts produced `ERROR` reports before fork startup; they are not conformance
-evidence. Supply the archive endpoint through `BSC_ARCHIVE_RPC_URL` before claiming a
-full harness result.
+The Ankr archive gate passed. The verified archive and full fork evidence are recorded
+under [Observed release-session evidence](#observed-release-session-evidence); this
+document does not store the endpoint or credential.
 
 ## Publication simulation tests
 
@@ -106,6 +103,11 @@ full harness result.
 
 - Direct NVDAB BSC inspection: chain `56`; H001/H002/H003/H004 pass; all optional interface probes are true.
 - Pinned Anvil smoke with a real holder and a real transfer receipt: H005, H007, and H008 pass.
-- NVDAB authorization discovery found no callable `owner()`, an enumerable `DEFAULT_ADMIN_ROLE` member, and a working admin `setUIMultiplier` path on an isolated fork. Independent 2.0x, 0.1x, and 1.008x transitions passed pre/post-effective checks; no storage mutation was used.
+- Ankr archive gate: PASS; chain ID `56`; NVDAB pinned block `122846004`; historical `uiMultiplier=1000778223752807865`; historical code is present.
+- Full pinned-fork smoke at implementation HEAD `ba79b29`: compatible `HoroiVault` profile `custom`, target `0xB63EAa97eC11623bBf873de50e805C46aF820d50`, report `PASS`, and H101–H110 all `PASS`. `suiteHash=0xc026467b2012f2e15bbfbe510af97cf234c430e0470c664916cfac73dbea4ee0`; `resultHash=0x39c1058021836b82016634fc400f1179de43d2eee3546d205565cf697444415a`.
+- H006: PASS for the authorized forward 2.0x scheduled transition with pre/post-effective verification through discovered updater `0x45e35Fe982F3869221b222Abea372fA97AA7679d`.
+- Compatible H104: PASS for the reverse 0.1x scenario. Compatible H105: PASS for the dividend-like 1.008x scenario.
+- In a separate isolated fork, `NaiveHoroiVault` profile `custom` returned expected overall `FAIL`: H103, H104, and H105 fail because multiplier changes are ignored. H103 expected effective claim `2001556447505615`, observed `1000000000000000`; `resultHash=0xd5b621282c9d899da752de8080d48930cf86bfed237b740dc35498190f4ba933`.
+- NVDAB authorization discovery found no callable `owner()`, an enumerable `DEFAULT_ADMIN_ROLE` member, and a working admin `setUIMultiplier` path on an isolated fork. No storage mutation was used; neither `anvil_setStorageAt` nor `vm.store` was used.
 - Token-only/custody runs keep H101–H110 `INCOMPLETE` because custody has no standardized deposit/redeem target. The transparent HoroiVault harness provides the production-neutral integration target; it is not an external protocol.
 - Live Binance publication simulation is `BLOCKED_REGISTRY_NOT_DEPLOYED` because this PR does not invent or deploy `REGISTRY_ADDRESS`.
