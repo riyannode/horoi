@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { evaluateIntegrationChecks, evaluateStatus, type EvaluationInput } from "../engine";
+import { buildReport, evaluateIntegrationChecks, evaluateStatus, type EvaluationInput } from "../engine";
 
 const ONE = 10n ** 18n;
 
@@ -59,5 +59,34 @@ describe("integration check engine unit tests", () => {
     expect(forward?.status).toBe("FAIL");
     expect(forward?.errorCode).toBe("INVARIANT_MULTIPLIER_IGNORED");
     expect(evaluateStatus(checks)).toBe("FAIL");
+  });
+
+  test("successful integration evidence without optional errors builds a report", () => {
+    const input = harnessInput();
+    let built = false;
+    try {
+      const report = buildReport({
+        runId: "serialization-regression",
+        chainId: 56,
+        blockNumber: 122_846_004,
+        blockHash: "0x01",
+        testedAt: 1,
+        asset: "0x00000000000000000000000000000000000000a1",
+        target: "0x00000000000000000000000000000000000000b1",
+        profile: "custom",
+        token: {
+          decimals: 18,
+          uiMultiplier: ONE.toString(),
+          newUIMultiplier: ONE.toString(),
+          effectiveAt: 0,
+          supportedInterfaces: [],
+        },
+        checks: evaluateIntegrationChecks(input),
+      });
+      built = report.resultHash.startsWith("0x");
+    } catch {
+      built = false;
+    }
+    expect(built).toBe(true);
   });
 });

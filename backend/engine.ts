@@ -426,7 +426,7 @@ export function evaluateTokenChecks(input: EvaluationInput): CheckResult[] {
     results.push(check("H005", events.length === 0 ? "INCOMPLETE" : eventOk ? "PASS" : "FAIL", {
       expected: "TransferWithUIAmount.uiAmount == rawAmount * activeMultiplier / 1e18",
       observed: events.map((event) => ({
-        txHash: event.txHash,
+        ...(event.txHash === undefined ? {} : { txHash: event.txHash }),
         rawAmount: event.rawAmount.toString(),
         uiAmount: event.uiAmount.toString(),
         expectedUi: event.expectedUi.toString(),
@@ -452,7 +452,12 @@ export function evaluateTokenChecks(input: EvaluationInput): CheckResult[] {
   } else if (!input.conversion || input.conversion.observedUi === undefined || input.conversion.observedBackRaw === undefined) {
     results.push(check("H007", "INCOMPLETE", {
       expected: "toUIAmount/fromUIAmount calls execute",
-      observed: input.conversion ?? null,
+      observed: input.conversion ? {
+        raw: input.conversion.raw.toString(),
+        expectedUi: input.conversion.expectedUi.toString(),
+        ...(input.conversion.observedUi === undefined ? {} : { observedUi: input.conversion.observedUi.toString() }),
+        ...(input.conversion.observedBackRaw === undefined ? {} : { observedBackRaw: input.conversion.observedBackRaw.toString() }),
+      } : null,
       errorCode: ErrorCodes.OPTIONAL_INTERFACE_UNAVAILABLE,
     }));
   } else {
@@ -480,7 +485,12 @@ export function evaluateTokenChecks(input: EvaluationInput): CheckResult[] {
   } else if (!input.balanceUi || input.balanceUi.observedUi === undefined) {
     results.push(check("H008", "INCOMPLETE", {
       expected: "balanceOfUI call executes",
-      observed: input.balanceUi ?? null,
+      observed: input.balanceUi ? {
+        account: input.balanceUi.account,
+        rawBalance: input.balanceUi.rawBalance.toString(),
+        expectedUi: input.balanceUi.expectedUi.toString(),
+        ...(input.balanceUi.observedUi === undefined ? {} : { observedUi: input.balanceUi.observedUi.toString() }),
+      } : null,
       errorCode: ErrorCodes.OPTIONAL_INTERFACE_UNAVAILABLE,
     }));
   } else {
@@ -527,9 +537,12 @@ function scenarioCheck(
       rawAfter: scenario.rawAfter.toString(),
       effectiveBefore: scenario.effectiveBefore.toString(),
       effectiveAfter: scenario.effectiveAfter.toString(),
-      returnedRaw: scenario.returnedRaw?.toString(),
+      ...(scenario.returnedRaw === undefined ? {} : { returnedRaw: scenario.returnedRaw.toString() }),
     },
-    evidence: { txHash: scenario.txHash, sharesBefore: scenario.sharesBefore?.toString() },
+    evidence: {
+      ...(scenario.txHash === undefined ? {} : { txHash: scenario.txHash }),
+      ...(scenario.sharesBefore === undefined ? {} : { sharesBefore: scenario.sharesBefore.toString() }),
+    },
     errorCode: ok
       ? undefined
       : !rawPreserved
@@ -558,9 +571,9 @@ export function evaluateIntegrationChecks(input: EvaluationInput): CheckResult[]
       expected: "deposit succeeds and exposes nonzero raw claim",
       observed: baseline ? {
         deposited: baseline.deposited,
-        rawClaim: baseline.rawClaim?.toString(),
-        shares: baseline.shares?.toString(),
-        error: baseline.error,
+        ...(baseline.rawClaim === undefined ? {} : { rawClaim: baseline.rawClaim.toString() }),
+        ...(baseline.shares === undefined ? {} : { shares: baseline.shares.toString() }),
+        ...(baseline.error === undefined ? {} : { error: baseline.error }),
       } : null,
       errorCode: depositOk ? undefined : baseline?.deposited === false ? ErrorCodes.DEPOSIT_FAILED : ErrorCodes.TARGET_UNSUPPORTED,
     }));
@@ -606,13 +619,19 @@ export function evaluateIntegrationChecks(input: EvaluationInput): CheckResult[]
       results.push(check("H106", preOk ? "PASS" : "FAIL", {
         expected: scheduled.expectedPre?.toString(),
         observed: scheduled.preActiveMultiplier.toString(),
-        evidence: { effectiveAt: scheduled.effectiveAt?.toString(), txHash: scheduled.txHash },
+        evidence: {
+          ...(scheduled.effectiveAt === undefined ? {} : { effectiveAt: scheduled.effectiveAt.toString() }),
+          ...(scheduled.txHash === undefined ? {} : { txHash: scheduled.txHash }),
+        },
         errorCode: preOk ? undefined : ErrorCodes.INVARIANT_APPLIED_EARLY,
       }));
       results.push(check("H107", postOk ? "PASS" : "FAIL", {
         expected: scheduled.expectedPost?.toString(),
         observed: scheduled.postActiveMultiplier.toString(),
-        evidence: { effectiveAt: scheduled.effectiveAt?.toString(), txHash: scheduled.txHash },
+        evidence: {
+          ...(scheduled.effectiveAt === undefined ? {} : { effectiveAt: scheduled.effectiveAt.toString() }),
+          ...(scheduled.txHash === undefined ? {} : { txHash: scheduled.txHash }),
+        },
         errorCode: postOk ? undefined : ErrorCodes.INVARIANT_APPLIED_LATE,
       }));
     }
@@ -621,7 +640,9 @@ export function evaluateIntegrationChecks(input: EvaluationInput): CheckResult[]
     if (!input.adapterRedeemable || redemptionScenario?.returnedRaw === undefined) {
       results.push(check("H108", "INCOMPLETE", {
         expected: "post-transition redemption returns proportional raw claim",
-        observed: redemptionScenario ? { returnedRaw: redemptionScenario.returnedRaw?.toString() } : null,
+        observed: redemptionScenario?.returnedRaw === undefined
+          ? null
+          : { returnedRaw: redemptionScenario.returnedRaw.toString() },
         errorCode: ErrorCodes.REDEEM_FAILED,
       }));
     } else {
@@ -676,8 +697,8 @@ export function evaluateIntegrationChecks(input: EvaluationInput): CheckResult[]
         observed: {
           attemptedRaw: fractional.attemptedRaw.toString(),
           rawClaim: fractional.rawClaim.toString(),
-          returnedRaw: fractional.returnedRaw?.toString(),
-          error: fractional.error,
+          ...(fractional.returnedRaw === undefined ? {} : { returnedRaw: fractional.returnedRaw.toString() }),
+          ...(fractional.error === undefined ? {} : { error: fractional.error }),
         },
         errorCode: ok ? undefined : ErrorCodes.INVARIANT_ROUNDING_EXCEEDED,
       }));
