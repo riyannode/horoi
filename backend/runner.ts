@@ -43,6 +43,7 @@ export type RunInput = {
   prepareForkTarget?: (args: { rpcUrl: string; asset: Address; blockNumber: bigint }) => Promise<Address>;
   dryRunTokenOnly?: boolean;
   onProgress?: (completed: number, total: number, stage: string) => void | Promise<void>;
+  onDiagnostic?: (stage: string, error?: unknown) => void;
 };
 
 export type RunResult = {
@@ -357,8 +358,10 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     completed = Math.min(total, completed + 1);
     await input.onProgress?.(completed, total, stage);
   };
+  const diagnostic = (stage: string, error?: unknown) => input.onDiagnostic?.(stage, error);
 
   try {
+    diagnostic("ARCHIVE_INSPECTION");
     const token = await inspectToken(input.asset, {
       rpcUrl,
       blockNumber: input.blockNumber ?? undefined,
@@ -376,20 +379,25 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     };
 
     if (!input.dryRunTokenOnly) {
+      diagnostic("FORK_START");
       try {
         fork = await startAnvilFork({ rpcUrl, blockNumber: token.blockNumber });
         base.forkAvailable = true;
         base.forkTimestamp = fork.blockTimestamp;
-      } catch {
+        diagnostic("FORK_STARTED");
+      } catch (error) {
         fork = null;
+        diagnostic("FORK_START_FAILED", error);
       }
     }
     if (fork && input.prepareForkTarget) {
+      diagnostic("TARGET_DEPLOYMENT");
       target = await input.prepareForkTarget({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
         blockNumber: fork.blockNumber,
       });
+      diagnostic("TARGET_DEPLOYED");
     }
     await progress("fork");
 
@@ -416,11 +424,14 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       const preferredHolder = input.holder ?? (
         process.env.HOROI_HOLDER_ADDRESS as Address | undefined
       );
+      diagnostic(preferredHolder ? "HOLDER_VERIFICATION" : "HOLDER_DISCOVERY");
       holder = await findFundedHolder(forkClient, input.asset, 1n, { preferred: preferredHolder });
+      diagnostic(holder ? "HOLDER_VERIFIED" : "HOLDER_NOT_FOUND");
       if (holder) {
         const holderBalance = await readBalance(fork.rpcUrl, input.asset, holder);
         baseAmount = chooseBaseAmount(token.decimals, holderBalance);
         if (baseAmount * 8n <= holderBalance) {
+          diagnostic("HOLDER_FUNDING");
           const fundAHash = await transferFromImpersonated(
             fork.rpcUrl,
             input.asset,
@@ -453,11 +464,19 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         }
       }
       const configuredUpdater = input.updater ?? (process.env.HOROI_MULTIPLIER_UPDATER as Address | undefined);
-      updater = configuredUpdater ?? await findMultiplierUpdater(forkClient, input.asset);
+      if (configuredUpdater) {
+        updater = configuredUpdater;
+        diagnostic("UPDATER_CONFIGURED");
+      } else {
+        diagnostic("UPDATER_DISCOVERY");
+        updater = await findMultiplierUpdater(forkClient, input.asset);
+        diagnostic(updater ? "UPDATER_DISCOVERED" : "UPDATER_NOT_FOUND");
+      }
     }
     await progress("funding-and-probes");
 
     if (fork && adapter && target && base.adapterAvailable && holder && baseAmount > 0n) {
+      diagnostic("BASELINE");
       base.baseline = await baselineRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
@@ -466,6 +485,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         amount: baseAmount,
         multiplier: token.uiMultiplier,
       });
+      diagnostic(base.baseline.deposited ? "BASELINE_COMPLETE" : "BASELINE_FAILED", base.baseline.error);
 
       if (base.baseline.rawClaim !== undefined) {
         const before: EconomicSnapshot = {
@@ -481,6 +501,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
 
     if (fork && adapter && target && base.adapterAvailable && holder && baseAmount > 0n && updater) {
       const scenarios: NonNullable<EvaluationInput["scenarios"]> = {};
+      diagnostic("FORWARD_SPLIT");
       const forward = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
@@ -493,10 +514,13 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         label: "forwardSplit",
         twoUsers: true,
       });
+      diagnostic(forward.error ? "FORWARD_SPLIT_FAILED" : "FORWARD_SPLIT_COMPLETE", forward.error);
+      diagnostic(forward.multiUser ? "MULTI_USER_COMPLETE" : "MULTI_USER_INCOMPLETE", forward.error);
       scenarios.forwardSplit = forward.scenario;
       scenarios.multiUser = forward.multiUser;
       base.scheduled = forward.scheduled;
 
+      diagnostic("REVERSE_SPLIT");
       const reverse = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
@@ -508,8 +532,10 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         updater,
         label: "reverseSplit",
       });
+      diagnostic(reverse.error ? "REVERSE_SPLIT_FAILED" : "REVERSE_SPLIT_COMPLETE", reverse.error);
       scenarios.reverseSplit = reverse.scenario;
 
+      diagnostic("DIVIDEND");
       const dividend = await scenarioRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
@@ -521,8 +547,10 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         updater,
         label: "dividend",
       });
+      diagnostic(dividend.error ? "DIVIDEND_FAILED" : "DIVIDEND_COMPLETE", dividend.error);
       scenarios.dividend = dividend.scenario;
 
+      diagnostic("FRACTIONAL");
       scenarios.fractional = await fractionalRun({
         rpcUrl: fork.rpcUrl,
         asset: input.asset,
@@ -531,6 +559,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
         baseAmount,
         multiplier: token.uiMultiplier,
       });
+      diagnostic(scenarios.fractional.deposited ? "FRACTIONAL_COMPLETE" : "FRACTIONAL_FAILED", scenarios.fractional.error);
       base.scenarios = scenarios;
 
       if (forward.scenario && economics?.before) {
@@ -555,6 +584,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
     ];
     await progress("evaluate");
 
+    diagnostic("REPORT_BUILD");
     const report = buildReport({
       runId: input.runId,
       chainId: token.chainId,
@@ -576,6 +606,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
       checks,
       economics,
     });
+    diagnostic("REPORT_BUILT");
     await progress("report");
     completed = total;
     await input.onProgress?.(completed, total, "complete");
@@ -604,6 +635,7 @@ export async function runConformance(input: RunInput): Promise<RunResult> {
           errorCode: error.code,
         })],
       });
+      diagnostic("ERROR_REPORT_BUILT", error);
       return {
         report: { ...report, status: "ERROR" },
         progress: { completed, total },

@@ -64,16 +64,26 @@ After `bun install --frozen-lockfile`, run:
 
 ```bash
 forge build
-BSC_RPC_URL="${BSC_ARCHIVE_RPC_URL:?set BSC_ARCHIVE_RPC_URL}" bun run smoke:fork
+BSC_RPC_URL="${BSC_ARCHIVE_RPC_URL:?set BSC_ARCHIVE_RPC_URL}" HOROI_SMOKE_FIXTURE=compatible bun run smoke:fork
 ```
 
-The command pins NVDAB to BSC block `122846004`, verifies chain ID `56`, deploys
-`HoroiVault` and `NaiveHoroiVault` on separate isolated forks, then runs each through
-the real adapter and `runConformance` path. It discovers the multiplier updater from
-fork state, performs real deposits, position reads, multiplier changes, and redemption,
-and prints the report metadata, H101-H110 statuses, and `resultHash` for both targets.
-If holder discovery is rate-limited, set `HOROI_HOLDER_ADDRESS` to a funded holder at
-the pinned block and rerun the same command.
+The command pins NVDAB to BSC block `122846004`, verifies chain ID `56`, deploys the
+selected fixture inside an isolated fork, then runs it through the real adapter and
+`runConformance` path. It discovers the multiplier updater from fork state, performs
+real deposits, position reads, multiplier changes, and redemption, and prints report
+metadata, H101-H110 statuses, H006 evidence, and `resultHash`. Run the compatible
+fixture first; only after it passes, run the incompatible fixture:
+
+```bash
+BSC_RPC_URL="${BSC_ARCHIVE_RPC_URL:?set BSC_ARCHIVE_RPC_URL}" HOROI_SMOKE_FIXTURE=incompatible bun run smoke:fork
+```
+
+`HOROI_SMOKE_FIXTURE` accepts `compatible`, `incompatible`, or `both` (default).
+`HOROI_HOLDER_ADDRESS` may identify a funded holder at the pinned block to skip log
+discovery. Automatic discovery scans at most 1,000 blocks per log request and stops
+with an error if the provider rejects a request. `HOROI_FORK_RPC_TIMEOUT_MS` controls
+local fork HTTP client timeouts, defaults to `120000`, and accepts positive values up
+to `300000` milliseconds.
 
 The pinned state requires an archive-capable RPC. In the latest rerun,
 `bsc.publicnode.com` required a personal token for historical state and the public

@@ -1,13 +1,12 @@
 import {
   createPublicClient,
   createWalletClient,
-  http,
   type Address,
   type PublicClient,
   type Abi,
 } from "viem";
 import { bsc } from "viem/chains";
-import { bstockAbi, erc4626Abi, impersonate, stopImpersonating } from "./chain";
+import { bstockAbi, erc4626Abi, forkHttpTransport, impersonate, stopImpersonating } from "./chain";
 import { ErrorCodes, HoroiError } from "./errors";
 
 export type AdapterKind = "custody" | "erc4626" | "custom";
@@ -45,13 +44,13 @@ export function effectiveOf(raw: bigint, multiplier: bigint): bigint {
 
 function clients(rpcUrl: string) {
   const chain = { ...bsc, id: 56 };
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as PublicClient;
+  const publicClient = createPublicClient({ chain, transport: forkHttpTransport(rpcUrl) }) as PublicClient;
   return { chain, publicClient };
 }
 
 function walletFor(rpcUrl: string, user: Address) {
   const chain = { ...bsc, id: 56 };
-  return createWalletClient({ account: user, chain, transport: http(rpcUrl) });
+  return createWalletClient({ account: user, chain, transport: forkHttpTransport(rpcUrl) });
 }
 
 async function asUser<T>(ctx: AdapterContext, fn: () => Promise<T>): Promise<T> {

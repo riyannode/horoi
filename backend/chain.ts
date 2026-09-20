@@ -15,6 +15,21 @@ import { ErrorCodes, HoroiError } from "./errors";
 
 export const CHAIN_ID = 56;
 export const DEFAULT_RPC = process.env.BSC_RPC_URL ?? "https://bsc-dataseed.bnbchain.org";
+export const DEFAULT_FORK_RPC_TIMEOUT_MS = 120_000;
+export const MAX_FORK_RPC_TIMEOUT_MS = 300_000;
+
+export function parseForkRpcTimeoutMs(value = process.env.HOROI_FORK_RPC_TIMEOUT_MS): number {
+  if (value === undefined) return DEFAULT_FORK_RPC_TIMEOUT_MS;
+  const timeout = Number(value);
+  if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_FORK_RPC_TIMEOUT_MS) {
+    throw new Error(`HOROI_FORK_RPC_TIMEOUT_MS must be finite, positive, and at most ${MAX_FORK_RPC_TIMEOUT_MS}`);
+  }
+  return timeout;
+}
+
+export function forkHttpTransport(rpcUrl: string) {
+  return http(rpcUrl, { timeout: parseForkRpcTimeoutMs() });
+}
 
 export const INTERFACE_IDS = {
   IERC165: "0x01ffc9a7",
@@ -477,6 +492,7 @@ export async function startAnvilFork(opts: {
   rpcUrl?: string;
   blockNumber?: bigint;
 }): Promise<ForkHandle> {
+  parseForkRpcTimeoutMs();
   const rpcUrl = opts.rpcUrl ?? DEFAULT_RPC;
   const { spawn } = await import("node:child_process");
   const anvilBin = process.env.ANVIL_BIN ?? "anvil";
@@ -524,43 +540,47 @@ export async function startAnvilFork(opts: {
     );
   }
 
-  const forkClient = forkPublicClient(rpc);
-  const chainId = await forkClient.getChainId();
-  if (chainId !== CHAIN_ID) {
-    child.kill("SIGTERM");
-    throw new HoroiError(ErrorCodes.CHAIN_MISMATCH, `fork chainId=${chainId}`);
-  }
-  const block = await forkClient.getBlock({ blockTag: "latest" });
+  try {
+    const forkClient = forkPublicClient(rpc);
+    const chainId = await forkClient.getChainId();
+    if (chainId !== CHAIN_ID) {
+      throw new HoroiError(ErrorCodes.CHAIN_MISMATCH, `fork chainId=${chainId}`);
+    }
+    const block = await forkClient.getBlock({ blockTag: "latest" });
 
-  return {
-    port,
-    pid: child.pid ?? 0,
-    rpcUrl: rpc,
-    blockNumber: block.number,
-    blockTimestamp: block.timestamp,
-    stop: async () => {
-      if (!child.pid) return;
-      try {
-        process.kill(child.pid, "SIGTERM");
-      } catch {
-        // already exited
-      }
-    },
-  };
+    return {
+      port,
+      pid: child.pid ?? 0,
+      rpcUrl: rpc,
+      blockNumber: block.number,
+      blockTimestamp: block.timestamp,
+      stop: async () => {
+        if (!child.pid) return;
+        try {
+          process.kill(child.pid, "SIGTERM");
+        } catch {
+          // already exited
+        }
+      },
+    };
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  }
 }
 
 export function anvilTestClient(rpcUrl: string) {
   return createTestClient({
     chain: { ...bsc, id: CHAIN_ID },
     mode: "anvil",
-    transport: http(rpcUrl),
+    transport: forkHttpTransport(rpcUrl),
   });
 }
 
 export function forkPublicClient(rpcUrl: string): PublicClient {
   return createPublicClient({
     chain: { ...bsc, id: CHAIN_ID },
-    transport: http(rpcUrl),
+    transport: forkHttpTransport(rpcUrl),
   });
 }
 
@@ -568,7 +588,7 @@ export function forkWalletClient(rpcUrl: string, account: Address) {
   return createWalletClient({
     account,
     chain: { ...bsc, id: CHAIN_ID },
-    transport: http(rpcUrl),
+    transport: forkHttpTransport(rpcUrl),
   });
 }
 
@@ -620,37 +640,33 @@ export async function findFundedHolder(
       functionName: "balanceOf",
       functionArgs: [opts.preferred],
     });
-    if ((balance ?? 0n) >= minBalance) return opts.preferred;
+    return (balance ?? 0n) >= minBalance ? opts.preferred : null;
   }
 
   const latest = await client.getBlockNumber();
   const lookback = opts.lookbackBlocks ?? 250_000n;
   const floor = latest > lookback ? latest - lookback : 0n;
-  const chunk = 10_000n;
+  const chunk = 1_000n;
   let toBlock = latest;
 
   while (toBlock >= floor) {
     const fromBlock = toBlock > chunk ? toBlock - chunk + 1n : 0n;
-    try {
-      const logs = await client.getLogs({
+    const logs = await client.getLogs({
+      address: asset,
+      event: transferEvent,
+      fromBlock: fromBlock < floor ? floor : fromBlock,
+      toBlock,
+    });
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const candidate = logs[i]?.args?.to as Address | undefined;
+      if (!candidate || /^0x0{40}$/i.test(candidate)) continue;
+      const balance = await tryRead<bigint>(client, {
         address: asset,
-        event: transferEvent,
-        fromBlock: fromBlock < floor ? floor : fromBlock,
-        toBlock,
+        abi: bstockAbi,
+        functionName: "balanceOf",
+        functionArgs: [candidate],
       });
-      for (let i = logs.length - 1; i >= 0; i -= 1) {
-        const candidate = logs[i]?.args?.to as Address | undefined;
-        if (!candidate || /^0x0{40}$/i.test(candidate)) continue;
-        const balance = await tryRead<bigint>(client, {
-          address: asset,
-          abi: bstockAbi,
-          functionName: "balanceOf",
-          functionArgs: [candidate],
-        });
-        if ((balance ?? 0n) >= minBalance) return candidate;
-      }
-    } catch {
-      // Public RPCs often cap getLogs ranges. Continue with smaller historical windows.
+      if ((balance ?? 0n) >= minBalance) return candidate;
     }
     if (fromBlock <= floor || fromBlock === 0n) break;
     toBlock = fromBlock - 1n;

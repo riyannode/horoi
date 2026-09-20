@@ -92,7 +92,7 @@ function reportEvidence(report: HoroiReport) {
     suiteHash: report.suiteHash,
     resultHash: report.resultHash,
     checks: report.checks
-      .filter((item) => item.id === "H001" || item.id.startsWith("H1"))
+      .filter((item) => item.id === "H001" || item.id === "H006" || item.id.startsWith("H1"))
       .map(({ id, name, status, expected, observed, evidence, errorCode }) => ({
         id,
         name,
@@ -105,16 +105,40 @@ function reportEvidence(report: HoroiReport) {
   };
 }
 
+function redactString(value: string): string {
+  let result = value;
+  const configuredRpcs = [process.env.BSC_RPC_URL, process.env.BSC_ARCHIVE_RPC_URL]
+    .filter((rpc): rpc is string => Boolean(rpc));
+  for (const rpc of configuredRpcs) {
+    result = result.replaceAll(rpc, "[redacted RPC URL]");
+    try {
+      const parsed = new URL(rpc);
+      const pathAfterBsc = parsed.pathname.split("/bsc/")[1];
+      const sensitiveParts = [
+        parsed.pathname,
+        decodeURIComponent(parsed.pathname),
+        pathAfterBsc,
+        pathAfterBsc ? decodeURIComponent(pathAfterBsc) : undefined,
+        ...[...parsed.searchParams.values()],
+      ].filter((part): part is string => Boolean(part));
+      for (const part of sensitiveParts) result = result.replaceAll(part, "[redacted]");
+    } catch {
+      // The configured endpoint itself is still redacted by exact replacement.
+    }
+  }
+  return result.replace(/https?:\/\/[^\s"'<>]+/gi, (raw) => {
+    try {
+      const url = new URL(raw);
+      return `${url.protocol}//${url.host}/[redacted]`;
+    } catch {
+      return "[redacted URL]";
+    }
+  });
+}
+
 function redactUrls(value: unknown): unknown {
   if (typeof value === "string") {
-    return value.replace(/https?:\/\/[^\s"'<>]+/gi, (raw) => {
-      try {
-        const url = new URL(raw);
-        return `${url.protocol}//${url.host}/[redacted]`;
-      } catch {
-        return "[redacted URL]";
-      }
-    });
+    return redactString(value);
   }
   if (Array.isArray(value)) return value.map(redactUrls);
   if (isRecord(value)) {
@@ -123,23 +147,45 @@ function redactUrls(value: unknown): unknown {
   return value;
 }
 
+function emitStage(fixture: Fixture | "configuration", stage: string, error?: unknown): void {
+  const payload = { fixture, stage, ...(error === undefined ? {} : { error: redactString(String(error)) }) };
+  process.stderr.write(`${JSON.stringify(payload)}\n`);
+}
+
 async function runFixture(fixture: Fixture): Promise<{ report: HoroiReport; deployment: Deployment | null }> {
   const adapter = fixture === "compatible" ? horoiVaultAdapter : incompatibleHoroiVaultAdapter;
   let deployment: Deployment | undefined;
-  const { report } = await runConformance({
-    runId: `pinned-nvdab-${fixture}`,
-    asset: NVDAB,
-    target: null,
-    profile: "custom",
-    blockNumber: PINNED_BLOCK,
-    rpcUrl: DEFAULT_RPC,
-    adapter,
-    prepareForkTarget: async ({ rpcUrl, asset }) => {
-      deployment = await deployTarget(rpcUrl, asset, fixture);
-      return deployment.address;
-    },
-  });
-  return { report, deployment: deployment ?? null };
+  let currentStage = "ARCHIVE_INSPECTION";
+  try {
+    const { report } = await runConformance({
+      runId: `pinned-nvdab-${fixture}`,
+      asset: NVDAB,
+      target: null,
+      profile: "custom",
+      blockNumber: PINNED_BLOCK,
+      rpcUrl: DEFAULT_RPC,
+      adapter,
+      onDiagnostic: (stage, error) => {
+        currentStage = stage;
+        emitStage(fixture, stage, error);
+      },
+      prepareForkTarget: async ({ rpcUrl, asset }) => {
+        deployment = await deployTarget(rpcUrl, asset, fixture);
+        return deployment.address;
+      },
+    });
+    const run = { report, deployment: deployment ?? null };
+    process.stdout.write(`${JSON.stringify(redactUrls({
+      nvdab: { asset: NVDAB, chainId: 56, pinnedBlock: PINNED_BLOCK.toString() },
+      [fixture]: { deployment: run.deployment, report: reportEvidence(report) },
+    }), null, 2)}\n`);
+    currentStage = "REPORT_VALIDATION";
+    verifyReport(run, fixture);
+    return run;
+  } catch (error) {
+    emitStage(fixture, currentStage, error);
+    throw error;
+  }
 }
 
 function verifyReport(run: { report: HoroiReport; deployment: Deployment | null }, fixture: Fixture): void {
@@ -171,21 +217,24 @@ function verifyReport(run: { report: HoroiReport; deployment: Deployment | null 
 
 async function main(): Promise<void> {
   if (process.env.HOROI_MULTIPLIER_UPDATER) {
-    throw new Error("Unset HOROI_MULTIPLIER_UPDATER so the smoke discovers the updater from fork state");
+    emitStage("configuration", "UPDATER_CONFIGURATION", "Unset HOROI_MULTIPLIER_UPDATER so the smoke discovers the updater from fork state");
+    process.exitCode = 1;
+    return;
   }
-  const compatible = await runFixture("compatible");
-  const incompatible = await runFixture("incompatible");
-  process.stdout.write(`${JSON.stringify(redactUrls({
-    nvdab: { asset: NVDAB, chainId: 56, pinnedBlock: PINNED_BLOCK.toString() },
-    compatible: { deployment: compatible.deployment, report: reportEvidence(compatible.report) },
-    incompatible: { deployment: incompatible.deployment, report: reportEvidence(incompatible.report) },
-  }), null, 2)}\n`);
-  verifyReport(compatible, "compatible");
-  verifyReport(incompatible, "incompatible");
+  const selection = process.env.HOROI_SMOKE_FIXTURE ?? "both";
+  const fixtures: Fixture[] = selection === "both"
+    ? ["compatible", "incompatible"]
+    : selection === "compatible" || selection === "incompatible"
+      ? [selection]
+      : [];
+  if (fixtures.length === 0) {
+    emitStage("configuration", "FIXTURE_SELECTION", "HOROI_SMOKE_FIXTURE must be compatible, incompatible, or both");
+    process.exitCode = 1;
+    return;
+  }
+  for (const fixture of fixtures) await runFixture(fixture);
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "unknown failure";
-  process.stderr.write(`${String(redactUrls(message))}\n`);
+main().catch(() => {
   process.exitCode = 1;
 });
