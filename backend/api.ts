@@ -20,8 +20,12 @@ import { publishPayload, runConformance } from "./runner";
 import { buildPublicationTransaction } from "./publication";
 import { runConformanceInSandbox } from "./sandbox";
 
-const db: AppDatabase = await openAppDb();
-await recoverInterruptedRunsAsync(db);
+const dbReady = openAppDb().then(async (db) => {
+  await recoverInterruptedRunsAsync(db);
+  return db;
+});
+
+const getDb = (): Promise<AppDatabase> => dbReady;
 
 const registryAddress = (() => {
   const configured = process.env.REGISTRY_ADDRESS?.trim();
@@ -99,7 +103,10 @@ async function executeRun(args: {
   updater?: Address;
 }) {
   activeRuns.add(args.runId);
+  let db: AppDatabase | undefined;
   try {
+    const activeDb = await getDb();
+    db = activeDb;
     const runInput = {
       runId: args.runId,
       asset: args.asset,
@@ -108,17 +115,20 @@ async function executeRun(args: {
       blockNumber: args.blockNumber,
       holder: args.holder,
       updater: args.updater,
-      onProgress: (completed: number) => updateRunProgressAsync(db, args.runId, completed, "RUNNING"),
+      onProgress: (completed: number) => updateRunProgressAsync(activeDb, args.runId, completed, "RUNNING"),
     };
     const result = process.env.HOROI_SANDBOX_EXECUTION === "1"
       ? await runConformanceInSandbox({ ...runInput, profile: args.profile as "custody" | "erc4626" })
       : await runConformance({ ...runInput, onProgress: runInput.onProgress });
     const context = await new BinanceWeb3Client().getRwaContext(args.asset);
     const report = attachRwaContext(result.report, context);
-    await finalizeRunAsync(db, args.runId, report.status, JSON.stringify(report));
+    await finalizeRunAsync(activeDb, args.runId, report.status, JSON.stringify(report));
   } catch (error) {
     const code = error instanceof HoroiError ? error.code : ErrorCodes.INTERNAL_ERROR;
-    await finalizeRunAsync(db, args.runId, "ERROR", null, code);
+    if (!db) {
+      db = await getDb().catch(() => undefined);
+    }
+    if (db) await finalizeRunAsync(db, args.runId, "ERROR", null, code);
   } finally {
     activeRuns.delete(args.runId);
   }
@@ -243,6 +253,7 @@ export const app = new Elysia({ prefix: "/api" })
             : BigInt(body.blockNumber),
         });
         const runId = crypto.randomUUID();
+        const db = await getDb();
         await insertRunAsync(db, {
           id: runId,
           asset,
@@ -287,6 +298,7 @@ export const app = new Elysia({ prefix: "/api" })
     },
   )
   .get("/runs/:id", async ({ params }) => {
+    const db = await getDb();
     const row = await getRunAsync(db, params.id);
     if (!row) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
     let report: unknown = null;
@@ -310,6 +322,7 @@ export const app = new Elysia({ prefix: "/api" })
     };
   })
   .get("/reports/:id", async ({ params }) => {
+    const db = await getDb();
     const row = await getRunAsync(db, params.id);
     if (!row?.report_json) {
       return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
@@ -317,6 +330,7 @@ export const app = new Elysia({ prefix: "/api" })
     return JSON.parse(row.report_json);
   })
   .get("/reports", async ({ query }) => {
+    const db = await getDb();
     const rows = await listRunsAsync(db, {
       asset: query.asset,
       target: query.target,
@@ -347,6 +361,7 @@ export const app = new Elysia({ prefix: "/api" })
     };
   })
   .get("/reports/:id/publish", async ({ params }) => {
+    const db = await getDb();
     const row = await getRunAsync(db, params.id);
     if (!row?.report_json) {
       return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
@@ -388,6 +403,7 @@ export const app = new Elysia({ prefix: "/api" })
     async ({ params, body, set }) => {
       try {
         const registry = registryForSimulation();
+        const db = await getDb();
         const row = await getRunAsync(db, params.id);
         if (!row?.report_json) throw new HoroiError(ErrorCodes.INPUT_INVALID, "report not found or not terminal");
         const report = JSON.parse(row.report_json) as HoroiPublishReport;
