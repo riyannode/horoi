@@ -5,21 +5,23 @@ import { BinanceWeb3Client, attachRwaContext, binanceHealth, publicationPayloadH
 import { ErrorCodes, HoroiError, httpStatusFor } from "./errors";
 import { SUITE_HASH, SUITE_ID, SUITE_VERSION, computeReportId } from "./engine";
 import {
-  finalizeRun,
-  getRun,
-  getSimulation,
-  insertRun,
-  listRuns,
-  openDb,
-  recoverInterruptedRuns,
-  updateRunProgress,
-  upsertSimulation,
+  finalizeRunAsync,
+  getRunAsync,
+  getSimulationAsync,
+  insertRunAsync,
+  listRunsAsync,
+  openAppDb,
+  recoverInterruptedRunsAsync,
+  updateRunProgressAsync,
+  upsertSimulationAsync,
+  type AppDatabase,
 } from "./db";
 import { publishPayload, runConformance } from "./runner";
 import { buildPublicationTransaction } from "./publication";
+import { runConformanceInSandbox } from "./sandbox";
 
-const db = openDb(process.env.DATABASE_PATH ?? "./horoi.db");
-recoverInterruptedRuns(db);
+const db: AppDatabase = await openAppDb();
+await recoverInterruptedRunsAsync(db);
 
 const registryAddress = (() => {
   const configured = process.env.REGISTRY_ADDRESS?.trim();
@@ -98,7 +100,7 @@ async function executeRun(args: {
 }) {
   activeRuns.add(args.runId);
   try {
-    const result = await runConformance({
+    const runInput = {
       runId: args.runId,
       asset: args.asset,
       target: args.target,
@@ -106,14 +108,17 @@ async function executeRun(args: {
       blockNumber: args.blockNumber,
       holder: args.holder,
       updater: args.updater,
-      onProgress: (completed, total) => updateRunProgress(db, args.runId, completed, "RUNNING"),
-    });
+      onProgress: (completed: number) => updateRunProgressAsync(db, args.runId, completed, "RUNNING"),
+    };
+    const result = process.env.HOROI_SANDBOX_EXECUTION === "1"
+      ? await runConformanceInSandbox({ ...runInput, profile: args.profile as "custody" | "erc4626" })
+      : await runConformance({ ...runInput, onProgress: runInput.onProgress });
     const context = await new BinanceWeb3Client().getRwaContext(args.asset);
     const report = attachRwaContext(result.report, context);
-    finalizeRun(db, args.runId, report.status, JSON.stringify(report));
+    await finalizeRunAsync(db, args.runId, report.status, JSON.stringify(report));
   } catch (error) {
     const code = error instanceof HoroiError ? error.code : ErrorCodes.INTERNAL_ERROR;
-    finalizeRun(db, args.runId, "ERROR", null, code);
+    await finalizeRunAsync(db, args.runId, "ERROR", null, code);
   } finally {
     activeRuns.delete(args.runId);
   }
@@ -238,7 +243,7 @@ export const app = new Elysia({ prefix: "/api" })
             : BigInt(body.blockNumber),
         });
         const runId = crypto.randomUUID();
-        insertRun(db, {
+        await insertRunAsync(db, {
           id: runId,
           asset,
           target,
@@ -251,7 +256,7 @@ export const app = new Elysia({ prefix: "/api" })
           progress_total: 8,
         });
 
-        void executeRun({
+        await executeRun({
           runId,
           asset,
           target,
@@ -261,8 +266,9 @@ export const app = new Elysia({ prefix: "/api" })
           updater,
         });
 
-        set.status = 202;
-        return { runId, status: "RUNNING", blockNumber: inspected.blockNumber.toString() };
+        set.status = 200;
+        const completed = await getRunAsync(db, runId);
+        return { runId, status: completed?.status ?? "ERROR", blockNumber: inspected.blockNumber.toString() };
       } catch (error) {
         const response = bad(error);
         set.status = response.status;
@@ -280,8 +286,8 @@ export const app = new Elysia({ prefix: "/api" })
       }),
     },
   )
-  .get("/runs/:id", ({ params }) => {
-    const row = getRun(db, params.id);
+  .get("/runs/:id", async ({ params }) => {
+    const row = await getRunAsync(db, params.id);
     if (!row) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
     let report: unknown = null;
     if (row.report_json) {
@@ -303,15 +309,15 @@ export const app = new Elysia({ prefix: "/api" })
       report,
     };
   })
-  .get("/reports/:id", ({ params }) => {
-    const row = getRun(db, params.id);
+  .get("/reports/:id", async ({ params }) => {
+    const row = await getRunAsync(db, params.id);
     if (!row?.report_json) {
       return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
     }
     return JSON.parse(row.report_json);
   })
-  .get("/reports", ({ query }) => {
-    const rows = listRuns(db, {
+  .get("/reports", async ({ query }) => {
+    const rows = await listRunsAsync(db, {
       asset: query.asset,
       target: query.target,
       status: query.status,
@@ -340,8 +346,8 @@ export const app = new Elysia({ prefix: "/api" })
       }),
     };
   })
-  .get("/reports/:id/publish", ({ params }) => {
-    const row = getRun(db, params.id);
+  .get("/reports/:id/publish", async ({ params }) => {
+    const row = await getRunAsync(db, params.id);
     if (!row?.report_json) {
       return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
     }
@@ -350,7 +356,7 @@ export const app = new Elysia({ prefix: "/api" })
       return new Response(JSON.stringify({ error: "report is not publishable" }), { status: 409 });
     }
     const reportId = reportIdFor(report);
-    const savedSimulation = getSimulation(db, reportId);
+    const savedSimulation = await getSimulationAsync(db, reportId);
     let simulation: unknown = null;
     let simulationStale = false;
     if (savedSimulation) {
@@ -382,16 +388,16 @@ export const app = new Elysia({ prefix: "/api" })
     async ({ params, body, set }) => {
       try {
         const registry = registryForSimulation();
-        const row = getRun(db, params.id);
+        const row = await getRunAsync(db, params.id);
         if (!row?.report_json) throw new HoroiError(ErrorCodes.INPUT_INVALID, "report not found or not terminal");
         const report = JSON.parse(row.report_json) as HoroiPublishReport;
         if (report.status === "ERROR") throw new HoroiError(ErrorCodes.INPUT_INVALID, "ERROR reports cannot be simulated");
         assertReportBinding(row, report);
         const tx = buildPublicationTransaction(report, body.from, registry);
-        const previous = getSimulation(db, reportIdFor(report));
+        const previous = await getSimulationAsync(db, reportIdFor(report));
         const simulation = await new BinanceWeb3Client().simulatePublication(tx);
         const reportId = reportIdFor(report);
-        upsertSimulation(db, {
+        await upsertSimulationAsync(db, {
           report_id: reportId,
           run_id: row.id,
           payload_hash: simulation.payloadHash,

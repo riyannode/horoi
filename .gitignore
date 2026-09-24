@@ -21,3 +21,5 @@ test-results/
 *.trace.zip
 wsl-setup.sh
 wsl-*.sh
+.vercel
+.env*

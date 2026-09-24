@@ -1,31 +1,54 @@
-# Frontend deployment
+# Vercel deployment
 
-Horoi's Vite frontend can be hosted on Vercel as a static site. Keep the Vercel
-project root at the repository root; [`vercel.json`](../vercel.json) installs the
-workspace dependencies and builds only `frontend/` into `frontend/dist`.
+The `horoi` Vercel project uses two Services from this repository:
 
-The backend remains a separately hosted Bun/Elysia service. It uses SQLite and
-starts Anvil child processes for isolated forks, so this configuration does not
-deploy or run the backend on Vercel.
+- `frontend`: the Vite static build from `frontend/`.
+- `backend`: the Bun/Elysia container from `backend/Dockerfile.vercel`.
 
-## API configuration
+The root routing sends `/api/*` to `backend` and every other path to
+`frontend`. The frontend keeps `VITE_API_BASE=/api`, so browser requests stay
+on the same origin.
 
-The frontend reads `VITE_API_BASE` at build time and defaults to `/api`. Vite's
-local development server proxies `/api` to the local backend. In Vercel project
-settings, configure `VITE_API_BASE` for each deployment environment before
-building:
+## Server environment
 
-- Set it to the public HTTPS backend API base, including `/api`, when the
-  frontend calls the VPS directly. The backend must allow the deployed frontend
-  origin through CORS.
-- Set it to `/api` when Vercel is configured with a same-origin rewrite from
-  `/api/:path*` to the HTTPS backend API.
+Configure these as server-side variables for both Preview and Production. Do
+not add them as `VITE_*` variables:
 
-The production backend hostname has not been confirmed, so this repository does
-not define a rewrite destination. Add the rewrite only after that hostname is
-known. Until `VITE_API_BASE` or a matching rewrite is configured in Vercel, the
-frontend build can succeed but API requests will not reach the backend.
+- `DATABASE_URL` — the Supabase or Neon Postgres connection string.
+- `BINANCE_API_KEY` and `BINANCE_API_SECRET` — optional RWA and transaction API credentials.
+- `BSC_RPC_URL` — the normal BSC RPC endpoint.
+- `BSC_ARCHIVE_RPC_URL` — the archive endpoint used by Sandbox fork runs.
+- `HOROI_SANDBOX_EXECUTION=1` — routes conformance execution through one Vercel Sandbox per run.
+- `HOROI_REPOSITORY_URL` — optional public repository URL; defaults to the Horoi GitHub repository.
+- `HOROI_SOURCE_REVISION` — the commit that the Sandbox must execute. In Vercel this can be set to the deployment commit.
 
-`VITE_*` values are included in the browser bundle. Only use this variable for a
-public API base URL; never put Binance credentials, RPC credentials, or private
-keys in frontend environment variables.
+Keep `REGISTRY_ADDRESS` unset until a mainnet registry deployment is explicitly
+approved. `PRIVATE_KEY` is not part of the deployment configuration.
+
+## Database and execution
+
+Production uses Postgres and applies the idempotent schema in
+`backend/migrations/001_initial.sql` at startup. SQLite remains the local test
+fallback when `DATABASE_URL` is absent outside Vercel. Vercel startup fails if
+`DATABASE_URL` is missing, so a deployment cannot silently use ephemeral disk.
+
+Each API run is awaited by the backend and, when `HOROI_SANDBOX_EXECUTION=1`,
+executes the existing Foundry/Anvil path inside a fresh Vercel Sandbox. The
+archive RPC is passed to that Sandbox only as an environment variable. The
+Sandbox has a hard timeout and is stopped in a `finally` block.
+
+## Verification
+
+```sh
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
+bun run build
+forge fmt --check
+forge build
+forge test -vvv
+```
+
+Deploy the first `horoi` bootstrap with the Vercel CLI, then make a second
+deployment through the normal preview workflow. Check `/`, `/api/health`, the
+RWA endpoints, and one real Sandbox fork run before opening the migration PR.
