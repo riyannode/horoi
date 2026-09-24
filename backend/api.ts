@@ -20,12 +20,20 @@ import { publishPayload, runConformance } from "./runner";
 import { buildPublicationTransaction } from "./publication";
 import { runConformanceInSandbox } from "./sandbox";
 
+let dbInitError: unknown;
 const dbReady = openAppDb().then(async (db) => {
   await recoverInterruptedRunsAsync(db);
   return db;
+}).catch((error: unknown) => {
+  dbInitError = error;
+  return null;
 });
 
-const getDb = (): Promise<AppDatabase> => dbReady;
+const getDb = async (): Promise<AppDatabase> => {
+  const db = await dbReady;
+  if (!db) throw dbInitError ?? new Error("database initialization failed");
+  return db;
+};
 
 const registryAddress = (() => {
   const configured = process.env.REGISTRY_ADDRESS?.trim();
