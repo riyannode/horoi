@@ -3,10 +3,8 @@
   "services": {
     "frontend": {
       "root": "frontend/",
-      "framework": "vite",
-      "installCommand": "bun install --frozen-lockfile",
-      "buildCommand": "bun run build",
-      "outputDirectory": "dist"
+      "runtime": "container",
+      "entrypoint": "Dockerfile.vercel"
     },
     "backend": {
       "root": "backend/",
