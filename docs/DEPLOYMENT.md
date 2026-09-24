@@ -27,10 +27,13 @@ approved. `PRIVATE_KEY` is not part of the deployment configuration.
 
 ## Database and execution
 
-Production uses Postgres and applies the idempotent schema in
-`backend/migrations/001_initial.sql` at startup. SQLite remains the local test
-fallback when `DATABASE_URL` is absent outside Vercel. Vercel startup fails if
-`DATABASE_URL` is missing, so a deployment cannot silently use ephemeral disk.
+Production uses Postgres. Apply the SQL files in `backend/migrations/` to the
+managed database before deployment; the Vercel runtime role is intentionally
+limited to application data operations. Set `DATABASE_AUTO_MIGRATE=1` only
+when `DATABASE_URL` uses an owner-capable migration role. SQLite remains the
+local test fallback when `DATABASE_URL` is absent outside Vercel. Vercel
+startup fails if `DATABASE_URL` is missing, so a deployment cannot silently
+use ephemeral disk.
 
 Each API run is awaited by the backend and, when `HOROI_SANDBOX_EXECUTION=1`,
 executes the existing Foundry/Anvil path inside a fresh Vercel Sandbox. The

@@ -297,20 +297,6 @@ const POSTGRES_SCHEMA = `
   CREATE INDEX IF NOT EXISTS runs_asset_target_started ON runs(asset, target, started_at);
   CREATE INDEX IF NOT EXISTS runs_status_started ON runs(status, started_at);
   CREATE INDEX IF NOT EXISTS publications_run ON publications(run_id);
-  ALTER TABLE runs ENABLE ROW LEVEL SECURITY;
-  ALTER TABLE publications ENABLE ROW LEVEL SECURITY;
-  ALTER TABLE publication_simulations ENABLE ROW LEVEL SECURITY;
-  DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'runs' AND policyname = 'deny_public_runs') THEN
-      CREATE POLICY deny_public_runs ON runs FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'publications' AND policyname = 'deny_public_publications') THEN
-      CREATE POLICY deny_public_publications ON publications FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'publication_simulations' AND policyname = 'deny_public_publication_simulations') THEN
-      CREATE POLICY deny_public_publication_simulations ON publication_simulations FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
-    END IF;
-  END $$;
 `;
 
 type PostgresRun = Record<string, unknown>;
@@ -373,6 +359,7 @@ export class PostgresDatabase {
   }
 
   async migrate(): Promise<void> {
+    if (process.env.DATABASE_AUTO_MIGRATE !== "1") return;
     await this.client.unsafe(POSTGRES_SCHEMA);
   }
 
