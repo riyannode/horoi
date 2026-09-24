@@ -19,6 +19,7 @@ not add them as `VITE_*` variables:
 - `BSC_RPC_URL` — the normal BSC RPC endpoint.
 - `BSC_ARCHIVE_RPC_URL` — the archive endpoint used by Sandbox fork runs.
 - `HOROI_SANDBOX_EXECUTION=1` — routes conformance execution through one Vercel Sandbox per run.
+- `CRON_SECRET` — secret used by the Vercel Cron worker for queued runs.
 - `HOROI_REPOSITORY_URL` — optional public repository URL; defaults to the Horoi GitHub repository.
 - `HOROI_SOURCE_REVISION` — the commit that the Sandbox must execute. In Vercel this can be set to the deployment commit.
 
@@ -35,10 +36,12 @@ local test fallback when `DATABASE_URL` is absent outside Vercel. Vercel
 startup fails if `DATABASE_URL` is missing, so a deployment cannot silently
 use ephemeral disk.
 
-Each API run is awaited by the backend and, when `HOROI_SANDBOX_EXECUTION=1`,
-executes the existing Foundry/Anvil path inside a fresh Vercel Sandbox. The
-archive RPC is passed to that Sandbox only as an environment variable. The
-Sandbox has a hard timeout and is stopped in a `finally` block.
+`POST /api/runs` persists a `QUEUED` record and returns immediately. Vercel
+Cron calls the authenticated `/api/worker` endpoint, which atomically claims
+one record and executes it through the existing Foundry/Anvil path inside a
+fresh Vercel Sandbox. The archive RPC is passed to that Sandbox only as an
+environment variable. The Sandbox has a hard timeout and is stopped in a
+`finally` block.
 
 ## Verification
 

@@ -6,6 +6,7 @@ import { ErrorCodes, HoroiError, httpStatusFor } from "./errors";
 import { SUITE_HASH, SUITE_ID, SUITE_VERSION, computeReportId } from "./engine";
 import {
   finalizeRunAsync,
+  claimNextRunAsync,
   getRunAsync,
   getSimulationAsync,
   insertRunAsync,
@@ -15,6 +16,7 @@ import {
   updateRunProgressAsync,
   upsertSimulationAsync,
   type AppDatabase,
+  type RunRow,
 } from "./db";
 import { publishPayload, runConformance } from "./runner";
 import { buildPublicationTransaction } from "./publication";
@@ -142,6 +144,27 @@ async function executeRun(args: {
   }
 }
 
+async function executePersistedRun(row: RunRow): Promise<void> {
+  if (row.profile !== "custody" && row.profile !== "erc4626") {
+    await finalizeRunAsync(await getDb(), row.id, "ERROR", null, ErrorCodes.ADAPTER_INVALID);
+    return;
+  }
+  await executeRun({
+    runId: row.id,
+    asset: asAddress(row.asset),
+    target: row.target ? asAddress(row.target) : null,
+    profile: row.profile,
+    blockNumber: BigInt(row.block_number),
+    holder: row.holder ? asAddress(row.holder) : undefined,
+    updater: row.updater ? asAddress(row.updater) : undefined,
+  });
+}
+
+function workerAuthorized(request: Request): boolean {
+  const secret = (process.env.CRON_SECRET ?? process.env.HOROI_WORKER_SECRET)?.trim();
+  return Boolean(secret && request.headers.get("authorization") === `Bearer ${secret}`);
+}
+
 export const app = new Elysia({ prefix: "/api" })
   .get("/health", () => ({
     ok: true,
@@ -152,6 +175,22 @@ export const app = new Elysia({ prefix: "/api" })
     activeRuns: activeRuns.size,
     maxConcurrentRuns,
   }))
+  .get("/worker", async ({ request, set }) => {
+    if (!workerAuthorized(request)) {
+      set.status = 401;
+      return { error: "UNAUTHORIZED" };
+    }
+    if (activeRuns.size >= maxConcurrentRuns) {
+      set.status = 429;
+      return { status: "BUSY", activeRuns: activeRuns.size };
+    }
+    const db = await getDb();
+    const row = await claimNextRunAsync(db);
+    if (!row) return { status: "IDLE" };
+    await executePersistedRun(row);
+    const completed = await getRunAsync(db, row.id);
+    return { status: "DONE", runId: row.id, runStatus: completed?.status ?? "ERROR" };
+  })
   .get(
     "/assets/search",
     async ({ query, set }) => {
@@ -233,13 +272,6 @@ export const app = new Elysia({ prefix: "/api" })
     "/runs",
     async ({ body, set }) => {
       try {
-        if (activeRuns.size >= maxConcurrentRuns) {
-          throw new HoroiError(
-            ErrorCodes.RUN_BUSY,
-            `Horoi is already running ${activeRuns.size}/${maxConcurrentRuns} jobs`,
-          );
-        }
-
         const asset = asAddress(body.asset);
         const target = body.target ? asAddress(body.target) : null;
         const holder = body.holder ? asAddress(body.holder) : undefined;
@@ -270,24 +302,15 @@ export const app = new Elysia({ prefix: "/api" })
           chain_id: CHAIN_ID,
           block_number: Number(inspected.blockNumber),
           block_hash: inspected.blockHash,
-          status: "RUNNING",
+          status: "QUEUED",
           started_at: Date.now(),
           progress_total: 8,
-        });
-
-        await executeRun({
-          runId,
-          asset,
-          target,
-          profile,
-          blockNumber: inspected.blockNumber,
           holder,
           updater,
         });
 
-        set.status = 200;
-        const completed = await getRunAsync(db, runId);
-        return { runId, status: completed?.status ?? "ERROR", blockNumber: inspected.blockNumber.toString() };
+        set.status = 202;
+        return { runId, status: "QUEUED", blockNumber: inspected.blockNumber.toString() };
       } catch (error) {
         const response = bad(error);
         set.status = response.status;

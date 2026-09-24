@@ -18,6 +18,8 @@ export type RunRow = {
   progress_total: number;
   report_json: string | null;
   error_code: string | null;
+  holder?: string | null;
+  updater?: string | null;
 };
 
 export type PublicationRow = {
@@ -65,7 +67,9 @@ export function openDb(path = process.env.DATABASE_PATH ?? "./horoi.db"): Databa
       progress_completed INTEGER NOT NULL DEFAULT 0,
       progress_total INTEGER NOT NULL,
       report_json TEXT,
-      error_code TEXT
+      error_code TEXT,
+      holder TEXT,
+      updater TEXT
     );
     CREATE TABLE IF NOT EXISTS publications (
       report_id TEXT PRIMARY KEY,
@@ -111,13 +115,20 @@ export function openDb(path = process.env.DATABASE_PATH ?? "./horoi.db"): Databa
       // Column already exists on current databases.
     }
   }
+  for (const column of ["holder TEXT", "updater TEXT"]) {
+    try {
+      db.exec(`ALTER TABLE runs ADD COLUMN ${column}`);
+    } catch {
+      // Column already exists on current databases.
+    }
+  }
   return db;
 }
 
 export function insertRun(db: Database, row: Omit<RunRow, "finished_at" | "report_json" | "error_code" | "progress_completed">): void {
   db.query(
-    `INSERT INTO runs (id, asset, target, profile, chain_id, block_number, block_hash, status, started_at, progress_completed, progress_total)
-     VALUES ($id, $asset, $target, $profile, $chainId, $blockNumber, $blockHash, $status, $startedAt, 0, $progressTotal)`,
+    `INSERT INTO runs (id, asset, target, profile, chain_id, block_number, block_hash, status, started_at, progress_completed, progress_total, holder, updater)
+     VALUES ($id, $asset, $target, $profile, $chainId, $blockNumber, $blockHash, $status, $startedAt, 0, $progressTotal, $holder, $updater)`,
   ).run({
     $id: row.id,
     $asset: row.asset,
@@ -129,7 +140,18 @@ export function insertRun(db: Database, row: Omit<RunRow, "finished_at" | "repor
     $status: row.status,
     $startedAt: row.started_at,
     $progressTotal: row.progress_total,
+    $holder: row.holder ?? null,
+    $updater: row.updater ?? null,
   });
+}
+
+export function claimNextRun(db: Database): RunRow | null {
+  return db.transaction(() => {
+    const row = db.query(`SELECT * FROM runs WHERE status = 'QUEUED' ORDER BY started_at ASC LIMIT 1`).get() as RunRow | null;
+    if (!row) return null;
+    db.query(`UPDATE runs SET status = 'RUNNING' WHERE id = $id AND status = 'QUEUED'`).run({ $id: row.id });
+    return getRun(db, row.id);
+  })();
 }
 
 export function updateRunProgress(db: Database, id: string, completed: number, status = "RUNNING"): void {
@@ -268,7 +290,9 @@ const POSTGRES_SCHEMA = `
     progress_completed INTEGER NOT NULL DEFAULT 0,
     progress_total INTEGER NOT NULL,
     report_json TEXT,
-    error_code TEXT
+    error_code TEXT,
+    holder TEXT,
+    updater TEXT
   );
   CREATE TABLE IF NOT EXISTS publications (
     report_id TEXT PRIMARY KEY,
@@ -317,6 +341,8 @@ function toRunRow(row: PostgresRun): RunRow {
     progress_total: Number(row.progress_total),
     report_json: row.report_json === null || row.report_json === undefined ? null : String(row.report_json),
     error_code: row.error_code === null || row.error_code === undefined ? null : String(row.error_code),
+    holder: row.holder === null || row.holder === undefined ? null : String(row.holder),
+    updater: row.updater === null || row.updater === undefined ? null : String(row.updater),
   };
 }
 
@@ -369,10 +395,22 @@ export class PostgresDatabase {
 
   async insertRun(row: Omit<RunRow, "finished_at" | "report_json" | "error_code" | "progress_completed">): Promise<void> {
     await this.client.unsafe(
-      `INSERT INTO runs (id, asset, target, profile, chain_id, block_number, block_hash, status, started_at, progress_completed, progress_total)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10)`,
-      [row.id, row.asset, row.target, row.profile, row.chain_id, row.block_number, row.block_hash, row.status, row.started_at, row.progress_total],
+      `INSERT INTO runs (id, asset, target, profile, chain_id, block_number, block_hash, status, started_at, progress_completed, progress_total, holder, updater)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11, $12)`,
+      [row.id, row.asset, row.target, row.profile, row.chain_id, row.block_number, row.block_hash, row.status, row.started_at, row.progress_total, row.holder ?? null, row.updater ?? null],
     );
+  }
+
+  async claimNextRun(): Promise<RunRow | null> {
+    const rows = await this.client.unsafe<PostgresRun[]>(
+      `WITH next_run AS (
+         SELECT id FROM runs WHERE status = 'QUEUED' ORDER BY started_at ASC FOR UPDATE SKIP LOCKED LIMIT 1
+       )
+       UPDATE runs SET status = 'RUNNING'
+       WHERE id = (SELECT id FROM next_run)
+       RETURNING *`,
+    );
+    return rows[0] ? toRunRow(rows[0]) : null;
   }
 
   async updateRunProgress(id: string, completed: number, status = "RUNNING"): Promise<void> {
@@ -466,6 +504,10 @@ export async function openAppDb(): Promise<AppDatabase> {
 
 export async function recoverInterruptedRunsAsync(db: AppDatabase): Promise<number> {
   return db instanceof PostgresDatabase ? db.recoverInterruptedRuns() : recoverInterruptedRuns(db);
+}
+
+export async function claimNextRunAsync(db: AppDatabase): Promise<RunRow | null> {
+  return db instanceof PostgresDatabase ? db.claimNextRun() : claimNextRun(db);
 }
 
 export async function insertRunAsync(db: AppDatabase, row: Omit<RunRow, "finished_at" | "report_json" | "error_code" | "progress_completed">): Promise<void> {
