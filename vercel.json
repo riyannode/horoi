@@ -9,9 +9,9 @@
       "outputDirectory": "dist"
     },
     "backend": {
-      "root": ".",
+      "root": "backend/",
       "runtime": "container",
-      "entrypoint": "backend/Dockerfile.vercel"
+      "entrypoint": "Dockerfile.vercel"
     }
   },
   "rewrites": [
